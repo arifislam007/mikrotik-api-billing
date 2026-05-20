@@ -38,7 +38,21 @@ The script handles everything: EPEL, Node.js 20, pnpm, PM2, PostgreSQL init + au
 
 ```bash
 sudo dnf install -y epel-release
-sudo dnf install -y curl nginx postgresql-server postgresql-contrib
+sudo dnf update -y
+
+sudo dnf install -y \
+  nginx \
+  postgresql-server postgresql-contrib \
+  gcc gcc-c++ make python3 \
+  curl wget git tar gzip unzip vim-enhanced \
+  net-tools bind-utils nmap-ncat lsof tcpdump \
+  chrony \
+  firewalld \
+  policycoreutils-python-utils setools-console
+
+# Enable time sync and firewall
+sudo systemctl enable --now chronyd
+sudo systemctl enable --now firewalld
 ```
 
 ### 2. Node.js 20

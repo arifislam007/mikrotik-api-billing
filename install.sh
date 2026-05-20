@@ -1,11 +1,10 @@
 #!/usr/bin/env bash
-# MikroTik Billing — Linux host setup script
-# Tested on AlmaLinux 8 / 9 (RHEL-compatible)
-# Run as a user with sudo privileges, NOT as root.
+# MikroTik Billing — AlmaLinux 8 / 9 setup script
+# Run as a non-root user with sudo privileges.
 # Usage: bash install.sh [--domain example.com] [--db-password mypassword]
 set -euo pipefail
 
-# ── Defaults ────────────────────────────────────────────────────────────────
+# ── Defaults ─────────────────────────────────────────────────────────────────
 APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DOMAIN="_"
 DB_NAME="mikrotik_billing"
@@ -14,7 +13,7 @@ DB_PASSWORD="postgres"
 DEPLOY_DIR="/var/www/mikrotik-billing"
 NODE_VERSION="20"
 
-# ── Argument parsing ─────────────────────────────────────────────────────────
+# ── Argument parsing ──────────────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
   case $1 in
     --domain)      DOMAIN="$2";      shift 2 ;;
@@ -29,16 +28,74 @@ done
 info()    { echo -e "\e[34m[INFO]\e[0m  $*"; }
 success() { echo -e "\e[32m[OK]\e[0m    $*"; }
 warn()    { echo -e "\e[33m[WARN]\e[0m  $*"; }
+die()     { echo -e "\e[31m[ERROR]\e[0m $*"; exit 1; }
 
-# ── 1. System packages ────────────────────────────────────────────────────────
-info "Enabling EPEL and updating packages..."
+# ── Preflight checks ──────────────────────────────────────────────────────────
+[[ $EUID -eq 0 ]] && die "Do not run as root. Use a sudo-capable user."
+command -v sudo &>/dev/null || die "sudo is required but not installed."
+
+# ── 1. EPEL + system update ───────────────────────────────────────────────────
+info "Enabling EPEL repository..."
 sudo dnf install -y epel-release
+
+info "Updating system packages..."
 sudo dnf update -y -q
 
-info "Installing prerequisites (curl, nginx, postgresql-server)..."
-sudo dnf install -y curl nginx postgresql-server postgresql-contrib
+# ── 2. All system packages ────────────────────────────────────────────────────
+info "Installing all required system packages..."
+sudo dnf install -y \
+  `# ── Web server ──────────────────────` \
+  nginx \
+  \
+  `# ── Database ────────────────────────` \
+  postgresql-server \
+  postgresql-contrib \
+  \
+  `# ── Build tools (node-gyp / native modules) ─` \
+  gcc \
+  gcc-c++ \
+  make \
+  python3 \
+  \
+  `# ── Core utilities ──────────────────` \
+  curl \
+  wget \
+  git \
+  tar \
+  gzip \
+  unzip \
+  vim-enhanced \
+  \
+  `# ── Network / diagnostics ───────────` \
+  net-tools \
+  bind-utils \
+  nmap-ncat \
+  lsof \
+  tcpdump \
+  \
+  `# ── Time sync (critical for billing timestamps) ─` \
+  chrony \
+  \
+  `# ── Firewall ────────────────────────` \
+  firewalld \
+  \
+  `# ── SELinux management tools ────────` \
+  policycoreutils-python-utils \
+  setools-console
 
-# ── 2. Node.js via NodeSource ─────────────────────────────────────────────────
+success "System packages installed."
+
+# ── 3. chrony — NTP time sync ─────────────────────────────────────────────────
+info "Enabling time synchronisation (chrony)..."
+sudo systemctl enable --now chronyd
+success "chronyd running."
+
+# ── 4. firewalld — ensure running before we add rules later ──────────────────
+info "Enabling firewalld..."
+sudo systemctl enable --now firewalld
+success "firewalld running."
+
+# ── 5. Node.js via NodeSource ─────────────────────────────────────────────────
 if ! command -v node &>/dev/null || [[ "$(node -v | cut -d. -f1 | tr -d v)" -lt "$NODE_VERSION" ]]; then
   info "Installing Node.js ${NODE_VERSION}..."
   curl -fsSL "https://rpm.nodesource.com/setup_${NODE_VERSION}.x" | sudo bash -
@@ -47,7 +104,7 @@ else
   info "Node.js $(node -v) already installed, skipping."
 fi
 
-# ── 3. pnpm ───────────────────────────────────────────────────────────────────
+# ── 6. pnpm ───────────────────────────────────────────────────────────────────
 if ! command -v pnpm &>/dev/null; then
   info "Installing pnpm..."
   npm install -g pnpm
@@ -55,7 +112,7 @@ else
   info "pnpm $(pnpm -v) already installed, skipping."
 fi
 
-# ── 4. PM2 ────────────────────────────────────────────────────────────────────
+# ── 7. PM2 ────────────────────────────────────────────────────────────────────
 if ! command -v pm2 &>/dev/null; then
   info "Installing PM2..."
   npm install -g pm2
@@ -63,46 +120,45 @@ else
   info "PM2 $(pm2 -v) already installed, skipping."
 fi
 
-# ── 5. PostgreSQL — init, configure auth, create DB ──────────────────────────
+# ── 8. PostgreSQL — init, auth config, create DB ─────────────────────────────
 info "Configuring PostgreSQL..."
 
-# Initialise data directory if not already done
 if [ ! -f /var/lib/pgsql/data/PG_VERSION ]; then
   sudo postgresql-setup --initdb
 fi
 
 sudo systemctl enable --now postgresql
 
-# Switch local + loopback connections from ident/peer to md5
-# (required so Node.js can authenticate with DB_USER/DB_PASSWORD over TCP)
+# AlmaLinux defaults to ident/peer auth — switch to md5 so Node.js can
+# connect with username + password over TCP (DB_HOST=localhost)
 PG_HBA="/var/lib/pgsql/data/pg_hba.conf"
 sudo sed -i \
-  -e 's/^\(local\s\+all\s\+all\s\+\)peer/\1md5/' \
-  -e 's/^\(host\s\+all\s\+all\s\+127\.0\.0\.1\/32\s\+\)ident/\1md5/' \
-  -e 's/^\(host\s\+all\s\+all\s\+::1\/128\s\+\)ident/\1md5/' \
+  -e 's/^\(local[[:space:]]\+all[[:space:]]\+all[[:space:]]\+\)peer/\1md5/' \
+  -e 's/^\(host[[:space:]]\+all[[:space:]]\+all[[:space:]]\+127\.0\.0\.1\/32[[:space:]]\+\)ident/\1md5/' \
+  -e 's/^\(host[[:space:]]\+all[[:space:]]\+all[[:space:]]\+::1\/128[[:space:]]\+\)ident/\1md5/' \
   "${PG_HBA}"
 
 sudo systemctl restart postgresql
 
-# Create role and database (idempotent)
+# Create role (idempotent)
 sudo -u postgres psql -tc "SELECT 1 FROM pg_roles WHERE rolname='${DB_USER}'" \
   | grep -q 1 \
   || sudo -u postgres psql -c "CREATE USER ${DB_USER} WITH PASSWORD '${DB_PASSWORD}';"
 
+# Create database (idempotent)
 sudo -u postgres psql -tc "SELECT 1 FROM pg_database WHERE datname='${DB_NAME}'" \
   | grep -q 1 \
   || sudo -u postgres psql -c "CREATE DATABASE ${DB_NAME} OWNER ${DB_USER};"
 
-# Grant required privileges
 sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE ${DB_NAME} TO ${DB_USER};"
 sudo -u postgres psql -d "${DB_NAME}" -c "GRANT ALL ON SCHEMA public TO ${DB_USER};"
 
-info "Running database schema..."
+info "Loading database schema..."
 sudo -u postgres psql "${DB_NAME}" < "${APP_DIR}/database/init.sql"
 success "Database ready."
 
-# ── 6. Write .env files ───────────────────────────────────────────────────────
-info "Writing .env files..."
+# ── 9. Write .env files ───────────────────────────────────────────────────────
+info "Writing environment files..."
 
 cat > "${APP_DIR}/.env" <<EOF
 VITE_API_URL=/api
@@ -122,9 +178,9 @@ BACKEND_URL=http://localhost:3000
 GATEWAY_PORT=8080
 EOF
 
-success ".env files written."
+success "Environment files written."
 
-# ── 7. Install dependencies ───────────────────────────────────────────────────
+# ── 10. Install Node.js dependencies ─────────────────────────────────────────
 info "Installing frontend dependencies..."
 cd "${APP_DIR}" && pnpm install
 
@@ -134,7 +190,7 @@ cd "${APP_DIR}/backend" && npm install --omit=dev
 info "Installing gateway dependencies..."
 cd "${APP_DIR}/gateway" && npm install --omit=dev
 
-# ── 8. Build frontend ─────────────────────────────────────────────────────────
+# ── 11. Build frontend ────────────────────────────────────────────────────────
 info "Building frontend..."
 cd "${APP_DIR}" && pnpm build
 
@@ -143,16 +199,17 @@ sudo cp -r "${APP_DIR}/dist/." "${DEPLOY_DIR}/dist/"
 sudo chown -R nginx:nginx "${DEPLOY_DIR}"
 success "Frontend built → ${DEPLOY_DIR}/dist"
 
-# ── 9. SELinux — allow nginx to proxy to Node.js ports ───────────────────────
+# ── 12. SELinux — allow nginx to proxy to Node.js ────────────────────────────
 if command -v getenforce &>/dev/null && [[ "$(getenforce)" != "Disabled" ]]; then
-  info "Configuring SELinux for nginx reverse proxy..."
+  info "Configuring SELinux policies..."
   sudo setsebool -P httpd_can_network_connect 1
+  # Allow nginx to read /var/www
+  sudo restorecon -Rv "${DEPLOY_DIR}" 2>/dev/null || true
   success "SELinux: httpd_can_network_connect enabled."
 fi
 
-# ── 10. nginx ─────────────────────────────────────────────────────────────────
+# ── 13. nginx ─────────────────────────────────────────────────────────────────
 info "Configuring nginx..."
-# AlmaLinux uses /etc/nginx/conf.d/ — no sites-available/sites-enabled
 NGINX_CONF="/etc/nginx/conf.d/mikrotik-billing.conf"
 
 sudo tee "${NGINX_CONF}" > /dev/null <<NGINXEOF
@@ -163,6 +220,9 @@ server {
     root ${DEPLOY_DIR}/dist;
     index index.html;
 
+    # Increase upload limit for MikroTik config imports
+    client_max_body_size 10M;
+
     location / {
         try_files \$uri \$uri/ /index.html;
     }
@@ -170,6 +230,7 @@ server {
     location /api/ {
         proxy_pass http://127.0.0.1:8080;
         proxy_http_version 1.1;
+        proxy_read_timeout 30s;
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
@@ -178,43 +239,49 @@ server {
 }
 NGINXEOF
 
-# Remove the default welcome page to avoid conflicts
 sudo rm -f /etc/nginx/conf.d/default.conf
-
 sudo systemctl enable --now nginx
 sudo nginx -t && sudo systemctl reload nginx
 success "nginx configured."
 
-# ── 11. firewalld — open HTTP port ───────────────────────────────────────────
-if systemctl is-active --quiet firewalld; then
-  info "Opening port 80 in firewalld..."
-  sudo firewall-cmd --permanent --add-service=http
-  sudo firewall-cmd --reload
-  success "Firewall: HTTP allowed."
-else
-  warn "firewalld is not running — skipping firewall config."
-fi
+# ── 14. firewalld — open HTTP ─────────────────────────────────────────────────
+info "Opening firewall ports..."
+sudo firewall-cmd --permanent --add-service=http
+sudo firewall-cmd --permanent --add-service=https
+sudo firewall-cmd --reload
+success "Firewall: HTTP/HTTPS allowed."
 
-# ── 12. PM2 — start and save ─────────────────────────────────────────────────
-info "Starting PM2 processes..."
+# ── 15. PM2 — start processes and register startup ───────────────────────────
+info "Starting application processes with PM2..."
 cd "${APP_DIR}"
 pm2 delete mikrotik-backend mikrotik-gateway 2>/dev/null || true
 pm2 start ecosystem.config.cjs
 pm2 save
 
-# Register PM2 startup
-STARTUP_CMD=$(pm2 startup | grep "sudo" | tail -1)
+STARTUP_CMD=$(pm2 startup systemd 2>&1 | grep "sudo" | tail -1)
 echo "${STARTUP_CMD}" > /tmp/pm2-startup-cmd.sh
-warn "Run this once to enable PM2 auto-start on boot:"
-echo "  ${STARTUP_CMD}"
+warn "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+warn " Run this command to enable PM2 auto-start on reboot:"
+warn ""
+warn "   ${STARTUP_CMD}"
+warn ""
+warn " (Also saved to /tmp/pm2-startup-cmd.sh)"
+warn "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
 success "PM2 processes started."
 
+# ── Done ──────────────────────────────────────────────────────────────────────
 echo ""
-success "============================================================"
-success " MikroTik Billing deployed successfully!"
+success "════════════════════════════════════════════════════════"
+success " MikroTik Billing installed successfully!"
 if [[ "${DOMAIN}" == "_" ]]; then
-  success " Open: http://$(hostname -I | awk '{print $1}')"
+  HOST_IP=$(hostname -I | awk '{print $1}')
+  success " Open: http://${HOST_IP}"
 else
   success " Open: http://${DOMAIN}"
 fi
-success "============================================================"
+success ""
+success " PM2 status:  pm2 list"
+success " App logs:    pm2 logs"
+success " DB shell:    sudo -u postgres psql ${DB_NAME}"
+success "════════════════════════════════════════════════════════"
