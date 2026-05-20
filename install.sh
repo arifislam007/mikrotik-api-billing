@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 # MikroTik Billing — Linux host setup script
-# Tested on Ubuntu 22.04 / 24.04 (Debian-based)
+# Tested on AlmaLinux 8 / 9 (RHEL-compatible)
 # Run as a user with sudo privileges, NOT as root.
 # Usage: bash install.sh [--domain example.com] [--db-password mypassword]
 set -euo pipefail
 
 # ── Defaults ────────────────────────────────────────────────────────────────
 APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-DOMAIN="localhost"
+DOMAIN="_"
 DB_NAME="mikrotik_billing"
-DB_USER="postgres"
+DB_USER="billing"
 DB_PASSWORD="postgres"
 DEPLOY_DIR="/var/www/mikrotik-billing"
 NODE_VERSION="20"
@@ -31,17 +31,18 @@ success() { echo -e "\e[32m[OK]\e[0m    $*"; }
 warn()    { echo -e "\e[33m[WARN]\e[0m  $*"; }
 
 # ── 1. System packages ────────────────────────────────────────────────────────
-info "Updating package lists..."
-sudo apt-get update -qq
+info "Enabling EPEL and updating packages..."
+sudo dnf install -y epel-release
+sudo dnf update -y -q
 
-info "Installing prerequisites (curl, gnupg, nginx, postgresql)..."
-sudo apt-get install -y -qq curl gnupg ca-certificates lsb-release nginx postgresql postgresql-contrib
+info "Installing prerequisites (curl, nginx, postgresql-server)..."
+sudo dnf install -y curl nginx postgresql-server postgresql-contrib
 
 # ── 2. Node.js via NodeSource ─────────────────────────────────────────────────
 if ! command -v node &>/dev/null || [[ "$(node -v | cut -d. -f1 | tr -d v)" -lt "$NODE_VERSION" ]]; then
   info "Installing Node.js ${NODE_VERSION}..."
-  curl -fsSL "https://deb.nodesource.com/setup_${NODE_VERSION}.x" | sudo -E bash -
-  sudo apt-get install -y nodejs
+  curl -fsSL "https://rpm.nodesource.com/setup_${NODE_VERSION}.x" | sudo bash -
+  sudo dnf install -y nodejs
 else
   info "Node.js $(node -v) already installed, skipping."
 fi
@@ -62,15 +63,39 @@ else
   info "PM2 $(pm2 -v) already installed, skipping."
 fi
 
-# ── 5. PostgreSQL — create DB and user ───────────────────────────────────────
+# ── 5. PostgreSQL — init, configure auth, create DB ──────────────────────────
 info "Configuring PostgreSQL..."
+
+# Initialise data directory if not already done
+if [ ! -f /var/lib/pgsql/data/PG_VERSION ]; then
+  sudo postgresql-setup --initdb
+fi
+
 sudo systemctl enable --now postgresql
 
+# Switch local + loopback connections from ident/peer to md5
+# (required so Node.js can authenticate with DB_USER/DB_PASSWORD over TCP)
+PG_HBA="/var/lib/pgsql/data/pg_hba.conf"
+sudo sed -i \
+  -e 's/^\(local\s\+all\s\+all\s\+\)peer/\1md5/' \
+  -e 's/^\(host\s\+all\s\+all\s\+127\.0\.0\.1\/32\s\+\)ident/\1md5/' \
+  -e 's/^\(host\s\+all\s\+all\s\+::1\/128\s\+\)ident/\1md5/' \
+  "${PG_HBA}"
+
+sudo systemctl restart postgresql
+
+# Create role and database (idempotent)
 sudo -u postgres psql -tc "SELECT 1 FROM pg_roles WHERE rolname='${DB_USER}'" \
-  | grep -q 1 || sudo -u postgres psql -c "CREATE USER ${DB_USER} WITH PASSWORD '${DB_PASSWORD}';"
+  | grep -q 1 \
+  || sudo -u postgres psql -c "CREATE USER ${DB_USER} WITH PASSWORD '${DB_PASSWORD}';"
 
 sudo -u postgres psql -tc "SELECT 1 FROM pg_database WHERE datname='${DB_NAME}'" \
-  | grep -q 1 || sudo -u postgres psql -c "CREATE DATABASE ${DB_NAME} OWNER ${DB_USER};"
+  | grep -q 1 \
+  || sudo -u postgres psql -c "CREATE DATABASE ${DB_NAME} OWNER ${DB_USER};"
+
+# Grant required privileges
+sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE ${DB_NAME} TO ${DB_USER};"
+sudo -u postgres psql -d "${DB_NAME}" -c "GRANT ALL ON SCHEMA public TO ${DB_USER};"
 
 info "Running database schema..."
 sudo -u postgres psql "${DB_NAME}" < "${APP_DIR}/database/init.sql"
@@ -113,14 +138,22 @@ cd "${APP_DIR}/gateway" && npm install --omit=dev
 info "Building frontend..."
 cd "${APP_DIR}" && pnpm build
 
-sudo mkdir -p "${DEPLOY_DIR}"
+sudo mkdir -p "${DEPLOY_DIR}/dist"
 sudo cp -r "${APP_DIR}/dist/." "${DEPLOY_DIR}/dist/"
-sudo chown -R www-data:www-data "${DEPLOY_DIR}"
+sudo chown -R nginx:nginx "${DEPLOY_DIR}"
 success "Frontend built → ${DEPLOY_DIR}/dist"
 
-# ── 9. nginx ─────────────────────────────────────────────────────────────────
+# ── 9. SELinux — allow nginx to proxy to Node.js ports ───────────────────────
+if command -v getenforce &>/dev/null && [[ "$(getenforce)" != "Disabled" ]]; then
+  info "Configuring SELinux for nginx reverse proxy..."
+  sudo setsebool -P httpd_can_network_connect 1
+  success "SELinux: httpd_can_network_connect enabled."
+fi
+
+# ── 10. nginx ─────────────────────────────────────────────────────────────────
 info "Configuring nginx..."
-NGINX_CONF="/etc/nginx/sites-available/mikrotik-billing"
+# AlmaLinux uses /etc/nginx/conf.d/ — no sites-available/sites-enabled
+NGINX_CONF="/etc/nginx/conf.d/mikrotik-billing.conf"
 
 sudo tee "${NGINX_CONF}" > /dev/null <<NGINXEOF
 server {
@@ -145,25 +178,43 @@ server {
 }
 NGINXEOF
 
-sudo ln -sf "${NGINX_CONF}" /etc/nginx/sites-enabled/mikrotik-billing
-sudo rm -f /etc/nginx/sites-enabled/default
+# Remove the default welcome page to avoid conflicts
+sudo rm -f /etc/nginx/conf.d/default.conf
+
+sudo systemctl enable --now nginx
 sudo nginx -t && sudo systemctl reload nginx
 success "nginx configured."
 
-# ── 10. PM2 — start and save ─────────────────────────────────────────────────
+# ── 11. firewalld — open HTTP port ───────────────────────────────────────────
+if systemctl is-active --quiet firewalld; then
+  info "Opening port 80 in firewalld..."
+  sudo firewall-cmd --permanent --add-service=http
+  sudo firewall-cmd --reload
+  success "Firewall: HTTP allowed."
+else
+  warn "firewalld is not running — skipping firewall config."
+fi
+
+# ── 12. PM2 — start and save ─────────────────────────────────────────────────
 info "Starting PM2 processes..."
 cd "${APP_DIR}"
 pm2 delete mikrotik-backend mikrotik-gateway 2>/dev/null || true
 pm2 start ecosystem.config.cjs
 pm2 save
 
-# Register PM2 startup (prints a command the user must run once as root)
-pm2 startup | tail -1 | tee /tmp/pm2-startup-cmd.sh
-warn "Run the command above (or in /tmp/pm2-startup-cmd.sh) to enable PM2 auto-start on boot."
+# Register PM2 startup
+STARTUP_CMD=$(pm2 startup | grep "sudo" | tail -1)
+echo "${STARTUP_CMD}" > /tmp/pm2-startup-cmd.sh
+warn "Run this once to enable PM2 auto-start on boot:"
+echo "  ${STARTUP_CMD}"
 success "PM2 processes started."
 
 echo ""
 success "============================================================"
 success " MikroTik Billing deployed successfully!"
-success " Open: http://${DOMAIN}"
+if [[ "${DOMAIN}" == "_" ]]; then
+  success " Open: http://$(hostname -I | awk '{print $1}')"
+else
+  success " Open: http://${DOMAIN}"
+fi
 success "============================================================"

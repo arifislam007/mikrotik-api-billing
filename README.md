@@ -13,125 +13,145 @@ Browser → nginx (port 80)
 ```
 
 - **Frontend** — React 18 + TypeScript + Vite, Tailwind CSS, shadcn/ui
-- **Gateway** — Express proxy (rate-limiting, auth header injection)
+- **Gateway** — Express proxy
 - **Backend** — Express REST API, PostgreSQL via `pg`
 - **Process manager** — PM2
 - **Web server** — nginx
 
 ---
 
-## Quick Install (Ubuntu 22.04 / 24.04)
+## Quick Install (AlmaLinux 8 / 9)
 
 ```bash
 git clone <repo-url> mikrotik-billing
 cd mikrotik-billing
-bash install.sh --domain your.server.ip --db-password your_secure_password
+bash install.sh --domain YOUR_SERVER_IP --db-password your_secure_password
 ```
 
-The script installs Node.js 20, pnpm, PM2, PostgreSQL, builds the frontend, configures nginx, initialises the database, and starts all processes under PM2.
+The script handles everything: EPEL, Node.js 20, pnpm, PM2, PostgreSQL init + auth config, SELinux boolean, firewalld, nginx, PM2 startup.
 
 ---
 
 ## Manual Setup
 
-### Prerequisites
+### 1. System packages
 
 ```bash
-# Node.js 20+
-curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
-sudo apt-get install -y nodejs
-
-# pnpm and PM2
-npm install -g pnpm pm2
-
-# PostgreSQL
-sudo apt-get install -y postgresql
-sudo systemctl enable --now postgresql
+sudo dnf install -y epel-release
+sudo dnf install -y curl nginx postgresql-server postgresql-contrib
 ```
 
-### Database
+### 2. Node.js 20
 
 ```bash
-sudo -u postgres psql <<SQL
-CREATE USER postgres WITH PASSWORD 'postgres';
-CREATE DATABASE mikrotik_billing OWNER postgres;
-SQL
+curl -fsSL https://rpm.nodesource.com/setup_20.x | sudo bash -
+sudo dnf install -y nodejs
+npm install -g pnpm pm2
+```
 
+### 3. PostgreSQL
+
+```bash
+# Initialise (first time only)
+sudo postgresql-setup --initdb
+sudo systemctl enable --now postgresql
+
+# Allow password auth over TCP (AlmaLinux defaults to ident)
+sudo sed -i \
+  -e 's/^\(local\s\+all\s\+all\s\+\)peer/\1md5/' \
+  -e 's/^\(host\s\+all\s\+all\s\+127\.0\.0\.1\/32\s\+\)ident/\1md5/' \
+  -e 's/^\(host\s\+all\s\+all\s\+::1\/128\s\+\)ident/\1md5/' \
+  /var/lib/pgsql/data/pg_hba.conf
+sudo systemctl restart postgresql
+
+# Create user and database
+sudo -u postgres psql <<SQL
+CREATE USER billing WITH PASSWORD 'your_password';
+CREATE DATABASE mikrotik_billing OWNER billing;
+GRANT ALL PRIVILEGES ON DATABASE mikrotik_billing TO billing;
+SQL
+sudo -u postgres psql -d mikrotik_billing -c "GRANT ALL ON SCHEMA public TO billing;"
+
+# Load schema
 sudo -u postgres psql mikrotik_billing < database/init.sql
 ```
 
-### Environment files
-
-Copy from the example and fill in your values:
+### 4. Environment files
 
 ```bash
-cp .env.example .env
-```
+# Root (.env) — used during frontend build
+echo "VITE_API_URL=/api" > .env
 
-Then create per-service files (or let `install.sh` do it):
-
-**`.env`** (root — Vite build)
-```
-VITE_API_URL=/api
-```
-
-**`backend/.env`**
-```
+# backend/.env
+cat > backend/.env <<EOF
 DB_HOST=localhost
 DB_PORT=5432
 DB_NAME=mikrotik_billing
-DB_USER=postgres
+DB_USER=billing
 DB_PASSWORD=your_password
 PORT=3000
-```
+EOF
 
-**`gateway/.env`**
-```
+# gateway/.env
+cat > gateway/.env <<EOF
 BACKEND_URL=http://localhost:3000
 GATEWAY_PORT=8080
+EOF
 ```
 
-### Install dependencies & build
+See [.env.example](.env.example) for all available variables.
+
+### 5. Install dependencies and build
 
 ```bash
-# Frontend
 pnpm install
-pnpm build          # outputs to dist/
+pnpm build                           # outputs to dist/
 
-# Backend / Gateway
 cd backend  && npm install --omit=dev && cd ..
 cd gateway  && npm install --omit=dev && cd ..
 ```
 
-### Deploy frontend static files
+### 6. Deploy static files
 
 ```bash
 sudo mkdir -p /var/www/mikrotik-billing/dist
 sudo cp -r dist/. /var/www/mikrotik-billing/dist/
-sudo chown -R www-data:www-data /var/www/mikrotik-billing
+sudo chown -R nginx:nginx /var/www/mikrotik-billing
 ```
 
-### nginx
+### 7. SELinux
+
+nginx must be allowed to proxy to local Node.js ports:
 
 ```bash
-sudo cp nginx.frontend.conf /etc/nginx/sites-available/mikrotik-billing
-# Edit server_name to your IP or domain
-sudo nano /etc/nginx/sites-available/mikrotik-billing
-
-sudo ln -s /etc/nginx/sites-available/mikrotik-billing \
-           /etc/nginx/sites-enabled/mikrotik-billing
-sudo rm -f /etc/nginx/sites-enabled/default
-sudo nginx -t && sudo systemctl reload nginx
+sudo setsebool -P httpd_can_network_connect 1
 ```
 
-### Start with PM2
+### 8. nginx
+
+AlmaLinux uses `/etc/nginx/conf.d/` (no sites-available/sites-enabled):
+
+```bash
+sudo cp nginx.frontend.conf /etc/nginx/conf.d/mikrotik-billing.conf
+sudo rm -f /etc/nginx/conf.d/default.conf   # remove welcome page
+sudo nginx -t
+sudo systemctl enable --now nginx
+sudo systemctl reload nginx
+```
+
+### 9. Firewall
+
+```bash
+sudo firewall-cmd --permanent --add-service=http
+sudo firewall-cmd --reload
+```
+
+### 10. PM2
 
 ```bash
 pm2 start ecosystem.config.cjs
 pm2 save
-
-# Enable auto-start on reboot
-pm2 startup          # copy and run the printed command
+pm2 startup    # copy and run the printed sudo command
 ```
 
 ---
@@ -143,8 +163,8 @@ pm2 list                      # show running processes
 pm2 logs mikrotik-backend     # stream backend logs
 pm2 logs mikrotik-gateway     # stream gateway logs
 pm2 restart mikrotik-backend  # restart a process
-pm2 stop all                  # stop everything
-pm2 delete all                # remove from PM2
+pm2 restart all               # restart everything
+pm2 stop all / pm2 delete all
 ```
 
 ---
@@ -152,17 +172,17 @@ pm2 delete all                # remove from PM2
 ## Development (local)
 
 ```bash
-# Start PostgreSQL locally (or adjust backend/.env to point at a remote DB)
-
-# Terminal 1 — backend
+# Terminal 1
 cd backend && npm run dev
 
-# Terminal 2 — gateway
+# Terminal 2
 cd gateway && npm run dev
 
-# Terminal 3 — frontend (proxies /api → localhost:8080 via vite.config.ts)
+# Terminal 3 — Vite proxies /api → localhost:8080, binds to 0.0.0.0
 pnpm dev
 ```
+
+Other devices on your LAN can reach the dev server at `http://YOUR_IP:5173`.
 
 ---
 
@@ -170,13 +190,8 @@ pnpm dev
 
 ```bash
 git pull
-
-# Rebuild frontend
-pnpm install
-pnpm build
+pnpm install && pnpm build
 sudo cp -r dist/. /var/www/mikrotik-billing/dist/
-
-# Restart Node processes
 pm2 restart all
 ```
 
@@ -201,7 +216,7 @@ pm2 restart all
 ├── database/
 │   └── init.sql             # Schema + seed data
 ├── ecosystem.config.cjs     # PM2 process config
-├── nginx.frontend.conf      # nginx site config template
-├── install.sh               # One-shot Linux setup script
+├── nginx.frontend.conf      # nginx site config (→ /etc/nginx/conf.d/)
+├── install.sh               # One-shot AlmaLinux setup script
 └── vite.config.ts           # Vite build + dev proxy config
 ```
