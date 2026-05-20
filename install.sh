@@ -48,8 +48,7 @@ sudo dnf install -y \
   nginx \
   \
   `# ── Database ────────────────────────` \
-  postgresql-server \
-  postgresql-contrib \
+  mysql-server \
   \
   `# ── Build tools (node-gyp / native modules) ─` \
   gcc \
@@ -120,41 +119,28 @@ else
   info "PM2 $(pm2 -v) already installed, skipping."
 fi
 
-# ── 8. PostgreSQL — init, auth config, create DB ─────────────────────────────
-info "Configuring PostgreSQL..."
+# ── 8. MySQL — start, create DB and user ─────────────────────────────────────
+info "Configuring MySQL..."
 
-if [ ! -f /var/lib/pgsql/data/PG_VERSION ]; then
-  sudo postgresql-setup --initdb
+# AlmaLinux 8 requires enabling the mysql:8.0 module stream first
+if grep -qE "AlmaLinux.*release 8" /etc/os-release 2>/dev/null; then
+  sudo dnf module enable -y mysql:8.0
 fi
 
-sudo systemctl enable --now postgresql
+sudo systemctl enable --now mysqld
 
-# AlmaLinux defaults to ident/peer auth — switch to md5 so Node.js can
-# connect with username + password over TCP (DB_HOST=localhost)
-PG_HBA="/var/lib/pgsql/data/pg_hba.conf"
-sudo sed -i \
-  -e 's/^\(local[[:space:]]\+all[[:space:]]\+all[[:space:]]\+\)peer/\1md5/' \
-  -e 's/^\(host[[:space:]]\+all[[:space:]]\+all[[:space:]]\+127\.0\.0\.1\/32[[:space:]]\+\)ident/\1md5/' \
-  -e 's/^\(host[[:space:]]\+all[[:space:]]\+all[[:space:]]\+::1\/128[[:space:]]\+\)ident/\1md5/' \
-  "${PG_HBA}"
-
-sudo systemctl restart postgresql
-
-# Create role (idempotent)
-sudo -u postgres psql -tc "SELECT 1 FROM pg_roles WHERE rolname='${DB_USER}'" \
-  | grep -q 1 \
-  || sudo -u postgres psql -c "CREATE USER ${DB_USER} WITH PASSWORD '${DB_PASSWORD}';"
-
-# Create database (idempotent)
-sudo -u postgres psql -tc "SELECT 1 FROM pg_database WHERE datname='${DB_NAME}'" \
-  | grep -q 1 \
-  || sudo -u postgres psql -c "CREATE DATABASE ${DB_NAME} OWNER ${DB_USER};"
-
-sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE ${DB_NAME} TO ${DB_USER};"
-sudo -u postgres psql -d "${DB_NAME}" -c "GRANT ALL ON SCHEMA public TO ${DB_USER};"
+# MySQL on AlmaLinux AppStream uses socket auth for root by default —
+# sudo mysql connects without a password
+info "Creating database and user..."
+sudo mysql <<MYSQL_SETUP
+CREATE DATABASE IF NOT EXISTS \`${DB_NAME}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+CREATE USER IF NOT EXISTS '${DB_USER}'@'localhost' IDENTIFIED BY '${DB_PASSWORD}';
+GRANT ALL PRIVILEGES ON \`${DB_NAME}\`.* TO '${DB_USER}'@'localhost';
+FLUSH PRIVILEGES;
+MYSQL_SETUP
 
 info "Loading database schema..."
-sudo -u postgres psql "${DB_NAME}" < "${APP_DIR}/database/init.sql"
+mysql -u "${DB_USER}" -p"${DB_PASSWORD}" "${DB_NAME}" < "${APP_DIR}/database/init.sql"
 success "Database ready."
 
 # ── 9. Write .env files ───────────────────────────────────────────────────────
@@ -166,7 +152,7 @@ EOF
 
 cat > "${APP_DIR}/backend/.env" <<EOF
 DB_HOST=localhost
-DB_PORT=5432
+DB_PORT=3306
 DB_NAME=${DB_NAME}
 DB_USER=${DB_USER}
 DB_PASSWORD=${DB_PASSWORD}

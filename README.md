@@ -42,7 +42,7 @@ sudo dnf update -y
 
 sudo dnf install -y \
   nginx \
-  postgresql-server postgresql-contrib \
+  mysql-server \
   gcc gcc-c++ make python3 \
   curl wget git tar gzip unzip vim-enhanced \
   net-tools bind-utils nmap-ncat lsof tcpdump \
@@ -63,31 +63,25 @@ sudo dnf install -y nodejs
 npm install -g pnpm pm2
 ```
 
-### 3. PostgreSQL
+### 3. MySQL
 
 ```bash
-# Initialise (first time only)
-sudo postgresql-setup --initdb
-sudo systemctl enable --now postgresql
+# AlmaLinux 8 only — enable the module stream first
+sudo dnf module enable -y mysql:8.0
 
-# Allow password auth over TCP (AlmaLinux defaults to ident)
-sudo sed -i \
-  -e 's/^\(local\s\+all\s\+all\s\+\)peer/\1md5/' \
-  -e 's/^\(host\s\+all\s\+all\s\+127\.0\.0\.1\/32\s\+\)ident/\1md5/' \
-  -e 's/^\(host\s\+all\s\+all\s\+::1\/128\s\+\)ident/\1md5/' \
-  /var/lib/pgsql/data/pg_hba.conf
-sudo systemctl restart postgresql
+sudo dnf install -y mysql-server
+sudo systemctl enable --now mysqld
 
-# Create user and database
-sudo -u postgres psql <<SQL
-CREATE USER billing WITH PASSWORD 'your_password';
-CREATE DATABASE mikrotik_billing OWNER billing;
-GRANT ALL PRIVILEGES ON DATABASE mikrotik_billing TO billing;
+# Root uses socket auth by default — sudo mysql requires no password
+sudo mysql <<SQL
+CREATE DATABASE IF NOT EXISTS mikrotik_billing CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+CREATE USER IF NOT EXISTS 'billing'@'localhost' IDENTIFIED BY 'your_password';
+GRANT ALL PRIVILEGES ON mikrotik_billing.* TO 'billing'@'localhost';
+FLUSH PRIVILEGES;
 SQL
-sudo -u postgres psql -d mikrotik_billing -c "GRANT ALL ON SCHEMA public TO billing;"
 
 # Load schema
-sudo -u postgres psql mikrotik_billing < database/init.sql
+mysql -u billing -p'your_password' mikrotik_billing < database/init.sql
 ```
 
 ### 4. Environment files
