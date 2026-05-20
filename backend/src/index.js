@@ -41,6 +41,18 @@ const safeServerFields = `
   last_sync_at, created_at, updated_at
 `;
 
+// MySQL has no ADD COLUMN IF NOT EXISTS — check INFORMATION_SCHEMA instead
+const addColumnIfMissing = async (table, column, definition) => {
+  const rows = await query(
+    `SELECT COUNT(*) as count FROM INFORMATION_SCHEMA.COLUMNS
+     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ?`,
+    [table, column]
+  );
+  if (parseInt(rows[0].count) === 0) {
+    await pool.execute(`ALTER TABLE \`${table}\` ADD COLUMN \`${column}\` ${definition}`);
+  }
+};
+
 const ensureSchema = async () => {
   await pool.execute(`
     CREATE TABLE IF NOT EXISTS mikrotik_servers (
@@ -60,22 +72,16 @@ const ensureSchema = async () => {
     )
   `);
 
-  const alterStmts = [
-    `ALTER TABLE users ADD COLUMN IF NOT EXISTS billing_package VARCHAR(100)`,
-    `ALTER TABLE users ADD COLUMN IF NOT EXISTS billing_price DECIMAL(10,2)`,
-    `ALTER TABLE resellers ADD COLUMN IF NOT EXISTS commission_rate DECIMAL(5,2) DEFAULT 15.00`,
-    `ALTER TABLE resellers ADD COLUMN IF NOT EXISTS updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP`,
-    `ALTER TABLE locations ADD COLUMN IF NOT EXISTS type VARCHAR(20) DEFAULT 'region'`,
-    `ALTER TABLE locations ADD COLUMN IF NOT EXISTS parent_id CHAR(36)`,
-    `ALTER TABLE locations ADD COLUMN IF NOT EXISTS updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP`,
-    `ALTER TABLE billing ADD COLUMN IF NOT EXISTS invoice_number VARCHAR(50)`,
-    `ALTER TABLE billing ADD COLUMN IF NOT EXISTS payment_method VARCHAR(50)`,
-    `ALTER TABLE billing ADD COLUMN IF NOT EXISTS updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP`,
-  ];
-
-  for (const stmt of alterStmts) {
-    await pool.execute(stmt);
-  }
+  await addColumnIfMissing('users',     'billing_package', 'VARCHAR(100)');
+  await addColumnIfMissing('users',     'billing_price',   'DECIMAL(10,2)');
+  await addColumnIfMissing('resellers', 'commission_rate', 'DECIMAL(5,2) DEFAULT 15.00');
+  await addColumnIfMissing('resellers', 'updated_at',      'DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP');
+  await addColumnIfMissing('locations', 'type',            "VARCHAR(20) DEFAULT 'region'");
+  await addColumnIfMissing('locations', 'parent_id',       'CHAR(36)');
+  await addColumnIfMissing('locations', 'updated_at',      'DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP');
+  await addColumnIfMissing('billing',   'invoice_number',  'VARCHAR(50)');
+  await addColumnIfMissing('billing',   'payment_method',  'VARCHAR(50)');
+  await addColumnIfMissing('billing',   'updated_at',      'DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP');
 };
 
 const getMikrotikServer = async (serverId) => {

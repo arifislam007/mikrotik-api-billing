@@ -41,6 +41,12 @@ sudo dnf install -y epel-release
 info "Updating system packages..."
 sudo dnf update -y -q
 
+# AlmaLinux 8 requires enabling the mysql:8.0 module BEFORE installing mysql-server
+if grep -qE "AlmaLinux.*release 8" /etc/os-release 2>/dev/null; then
+  info "AlmaLinux 8 detected — enabling mysql:8.0 module..."
+  sudo dnf module enable -y mysql:8.0
+fi
+
 # ── 2. All system packages ────────────────────────────────────────────────────
 info "Installing all required system packages..."
 sudo dnf install -y \
@@ -121,11 +127,6 @@ fi
 
 # ── 8. MySQL — start, create DB and user ─────────────────────────────────────
 info "Configuring MySQL..."
-
-# AlmaLinux 8 requires enabling the mysql:8.0 module stream first
-if grep -qE "AlmaLinux.*release 8" /etc/os-release 2>/dev/null; then
-  sudo dnf module enable -y mysql:8.0
-fi
 
 sudo systemctl enable --now mysqld
 
@@ -269,5 +270,5 @@ fi
 success ""
 success " PM2 status:  pm2 list"
 success " App logs:    pm2 logs"
-success " DB shell:    sudo -u postgres psql ${DB_NAME}"
+success " DB shell:    mysql -u ${DB_USER} -p ${DB_NAME}"
 success "════════════════════════════════════════════════════════"
