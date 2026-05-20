@@ -1,0 +1,78 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: mikrotik-postgres
+    environment:
+      POSTGRES_USER: ${DB_USER:-postgres}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-postgres}
+      POSTGRES_DB: ${DB_NAME:-mikrotik_billing}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./database/init.sql:/docker-entrypoint-initdb.d/init.sql
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d mikrotik_billing"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - mikrotik-network
+    restart: unless-stopped
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: mikrotik-backend
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: ${DB_NAME:-mikrotik_billing}
+      DB_USER: ${DB_USER:-postgres}
+      DB_PASSWORD: ${DB_PASSWORD:-postgres}
+      PORT: 3000
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - mikrotik-network
+    restart: unless-stopped
+
+  gateway:
+    build:
+      context: ./gateway
+      dockerfile: Dockerfile
+    container_name: mikrotik-gateway
+    environment:
+      BACKEND_URL: http://backend:3000
+      GATEWAY_PORT: 8080
+    ports:
+      - "8080:8080"
+    depends_on:
+      - backend
+    networks:
+      - mikrotik-network
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    container_name: mikrotik-frontend
+    environment:
+      VITE_API_URL: http://gateway:8080/api
+    ports:
+      - "5173:80"
+    depends_on:
+      - gateway
+    networks:
+      - mikrotik-network
+    restart: unless-stopped
+
+networks:
+  mikrotik-network:
+    driver: bridge
+
+volumes:
+  postgres_data:
