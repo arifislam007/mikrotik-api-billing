@@ -151,6 +151,8 @@ cat > "${APP_DIR}/.env" <<EOF
 VITE_API_URL=/api
 EOF
 
+JWT_SECRET=$(openssl rand -hex 32 2>/dev/null || tr -dc 'A-Za-z0-9' </dev/urandom | head -c 48)
+
 cat > "${APP_DIR}/backend/.env" <<EOF
 DB_HOST=localhost
 DB_PORT=3306
@@ -158,6 +160,7 @@ DB_NAME=${DB_NAME}
 DB_USER=${DB_USER}
 DB_PASSWORD=${DB_PASSWORD}
 PORT=3000
+JWT_SECRET=${JWT_SECRET}
 EOF
 
 cat > "${APP_DIR}/gateway/.env" <<EOF

@@ -1,189 +1,167 @@
 import { useEffect, useState } from "react";
-import { StatsCard } from "../components/StatsCard";
-import { Users, DollarSign, AlertCircle, TrendingUp } from "lucide-react";
-import {
-  LineChart,
-  Line,
-  BarChart,
-  Bar,
-  XAxis,
-  YAxis,
-  CartesianGrid,
-  Tooltip,
-  ResponsiveContainer,
-  Legend,
-} from "recharts";
 import { statsService } from "../services/api";
 
-const bandwidthData = [
-  { month: "Jan", usage: 450 },
-  { month: "Feb", usage: 520 },
-  { month: "Mar", usage: 480 },
-  { month: "Apr", usage: 600 },
-  { month: "May", usage: 750 },
-  { month: "Jun", usage: 680 },
+interface Stats {
+  totalClients: number;    runningClients: number;   inactiveClients: number; waiverClients: number;
+  newClients: number;      onlineClients: number;    blockedClients: number;  leftClients: number;
+  paidClients: number;     unpaidClients: number;    partialPaid: number;     billDateExpire: number;
+  billingClients: number;  totalRevenue: number;     pendingCount: number;    pendingAmount: number;
+}
+
+interface Tile {
+  label: string; key: keyof Stats; desc: string;
+  color: string; textColor: string; iconBg: string; emoji: string;
+}
+
+const tiles: Tile[] = [
+  // Row 1 — Teal (active/positive)
+  { label: "Total Client",       key: "totalClients",    desc: "All registered clients",       color: "bg-cyan-500",    textColor: "text-cyan-700",   iconBg: "bg-cyan-600",   emoji: "👥" },
+  { label: "Running Clients",    key: "runningClients",  desc: "Active & not left",            color: "bg-teal-500",    textColor: "text-teal-700",   iconBg: "bg-teal-600",   emoji: "✅" },
+  { label: "Online Clients",     key: "onlineClients",   desc: "Currently connected",          color: "bg-emerald-500", textColor: "text-emerald-700",iconBg: "bg-emerald-600",emoji: "🟢" },
+  { label: "New Client",         key: "newClients",      desc: "Added this month",             color: "bg-cyan-400",    textColor: "text-cyan-700",   iconBg: "bg-cyan-500",   emoji: "🆕" },
+  // Row 2 — Purple (neutral counts)
+  { label: "Billing Clients",    key: "billingClients",  desc: "Bills generated this month",   color: "bg-violet-500",  textColor: "text-violet-700", iconBg: "bg-violet-600", emoji: "📋" },
+  { label: "Paid Clients",       key: "paidClients",     desc: "Fully paid this month",        color: "bg-purple-500",  textColor: "text-purple-700", iconBg: "bg-purple-600", emoji: "💳" },
+  { label: "Partially Paid",     key: "partialPaid",     desc: "Partial payment received",     color: "bg-indigo-500",  textColor: "text-indigo-700", iconBg: "bg-indigo-600", emoji: "🔆" },
+  { label: "Inactive Clients",   key: "inactiveClients", desc: "Suspended accounts",           color: "bg-slate-500",   textColor: "text-slate-700",  iconBg: "bg-slate-600",  emoji: "⏸️" },
+  // Row 3 — Warning/Gray (issues)
+  { label: "Unpaid Clients",     key: "unpaidClients",   desc: "No payment received",          color: "bg-orange-500",  textColor: "text-orange-700", iconBg: "bg-orange-600", emoji: "⚠️" },
+  { label: "Blocked Clients",    key: "blockedClients",  desc: "Disabled on router",           color: "bg-red-500",     textColor: "text-red-700",    iconBg: "bg-red-600",    emoji: "🚫" },
+  { label: "Bill Date Expire",   key: "billDateExpire",  desc: "Billing date passed",          color: "bg-amber-500",   textColor: "text-amber-700",  iconBg: "bg-amber-600",  emoji: "📅" },
+  { label: "Waiver Clients",     key: "waiverClients",   desc: "Free / staff accounts",        color: "bg-gray-500",    textColor: "text-gray-700",   iconBg: "bg-gray-600",   emoji: "🎁" },
+  // Row 4 — Dark (critical)
+  { label: "Left Clients",       key: "leftClients",     desc: "No longer in system",          color: "bg-gray-700",    textColor: "text-gray-800",   iconBg: "bg-gray-800",   emoji: "👋" },
+  { label: "Pending Invoices",   key: "pendingCount",    desc: "Awaiting payment",             color: "bg-rose-600",    textColor: "text-rose-700",   iconBg: "bg-rose-700",   emoji: "📄" },
+  { label: "Due Amount (৳)",     key: "pendingAmount",   desc: "Total outstanding dues",       color: "bg-red-600",     textColor: "text-red-700",    iconBg: "bg-red-700",    emoji: "💰" },
+  { label: "Total Revenue (৳)",  key: "totalRevenue",    desc: "All-time collected revenue",   color: "bg-green-600",   textColor: "text-green-700",  iconBg: "bg-green-700",  emoji: "💵" },
 ];
 
-const revenueData = [
-  { month: "Jan", revenue: 12400, expenses: 8200 },
-  { month: "Feb", revenue: 14200, expenses: 8500 },
-  { month: "Mar", revenue: 13800, expenses: 8300 },
-  { month: "Apr", revenue: 16500, expenses: 9100 },
-  { month: "May", revenue: 18200, expenses: 9400 },
-  { month: "Jun", revenue: 17800, expenses: 9200 },
-];
+const fmt = (v: number, isMoney?: boolean) => {
+  if (isMoney) return v >= 1000 ? `${(v/1000).toFixed(1)}k` : v.toFixed(0);
+  return v.toLocaleString();
+};
 
-const recentActivity = [
-  { user: "user_mike_001", action: "Payment received", time: "5 min ago", status: "success" },
-  { user: "user_sarah_042", action: "Account expired", time: "12 min ago", status: "warning" },
-  { user: "user_john_089", action: "New registration", time: "24 min ago", status: "success" },
-  { user: "user_anna_156", action: "Payment overdue", time: "1 hour ago", status: "error" },
-  { user: "user_david_203", action: "Profile updated", time: "2 hours ago", status: "info" },
-];
+const moneyKeys: (keyof Stats)[] = ["totalRevenue", "pendingAmount"];
 
 export function Dashboard() {
-  const [stats, setStats] = useState({
-    totalUsers: 1247,
-    activeUsers: 0,
-    expiredUsers: 0,
-    monthlyRevenue: 17800,
-  });
+  const [stats, setStats] = useState<Stats | null>(null);
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const fetchStats = async () => {
-      try {
-        const data = await statsService.getStats();
-        setStats(data);
-      } catch (err) {
-        console.error("Failed to fetch stats:", err);
-      }
-    };
-    fetchStats();
+    statsService.getStats()
+      .then(setStats)
+      .catch(console.error)
+      .finally(() => setLoading(false));
   }, []);
+
+  const get = (k: keyof Stats) => {
+    if (!stats) return "—";
+    const v = Number(stats[k]);
+    return fmt(v, moneyKeys.includes(k));
+  };
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold text-gray-900">Dashboard</h1>
-        <p className="text-gray-600 mt-1">Overview of your MikroTik PPPoE system</p>
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold text-gray-900">Admin Dashboard</h1>
+          <p className="text-gray-500 text-sm mt-1">ISP management overview — real-time client and billing metrics</p>
+        </div>
+        <button onClick={() => { setLoading(true); statsService.getStats().then(setStats).catch(console.error).finally(()=>setLoading(false)); }}
+          className="px-3 py-1.5 text-sm text-cyan-700 bg-cyan-50 hover:bg-cyan-100 border border-cyan-200 rounded-lg transition-colors">
+          ↻ Refresh
+        </button>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-        <StatsCard
-          title="Active Users"
-          value={stats.totalUsers.toLocaleString()}
-          icon={Users}
-          color="blue"
-          trend={{ value: 12.5, isPositive: true }}
-        />
-        <StatsCard
-          title="Expired Accounts"
-          value={stats.expiredUsers.toLocaleString()}
-          icon={AlertCircle}
-          color="orange"
-          trend={{ value: 5.2, isPositive: false }}
-        />
-        <StatsCard
-          title="Payments Pending"
-          value="34"
-          icon={DollarSign}
-          color="purple"
-        />
-        <StatsCard
-          title="Monthly Revenue"
-          value={`$${stats.monthlyRevenue.toLocaleString()}`}
-          icon={TrendingUp}
-          color="green"
-          trend={{ value: 8.3, isPositive: true }}
-        />
-      </div>
-
-      {/* Charts */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Bandwidth Usage Chart */}
-        <div className="bg-white rounded-lg border border-gray-200 p-6">
-          <h2 className="text-lg font-semibold text-gray-900 mb-4">Bandwidth Usage (GB)</h2>
-          <ResponsiveContainer width="100%" height={300}>
-            <LineChart data={bandwidthData}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-              <XAxis dataKey="month" stroke="#9ca3af" />
-              <YAxis stroke="#9ca3af" />
-              <Tooltip
-                contentStyle={{
-                  backgroundColor: "#fff",
-                  border: "1px solid #e5e7eb",
-                  borderRadius: "8px",
-                }}
-              />
-              <Line
-                type="monotone"
-                dataKey="usage"
-                stroke="#3b82f6"
-                strokeWidth={2}
-                dot={{ fill: "#3b82f6", r: 4 }}
-              />
-            </LineChart>
-          </ResponsiveContainer>
+      {loading ? (
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-4 gap-3">
+          {Array.from({length: 16}).map((_,i) => (
+            <div key={i} className="bg-white rounded-xl border border-gray-200 p-4 animate-pulse h-28" />
+          ))}
         </div>
-
-        {/* Revenue Chart */}
-        <div className="bg-white rounded-lg border border-gray-200 p-6">
-          <h2 className="text-lg font-semibold text-gray-900 mb-4">Revenue vs Expenses</h2>
-          <ResponsiveContainer width="100%" height={300}>
-            <BarChart data={revenueData}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-              <XAxis dataKey="month" stroke="#9ca3af" />
-              <YAxis stroke="#9ca3af" />
-              <Tooltip
-                contentStyle={{
-                  backgroundColor: "#fff",
-                  border: "1px solid #e5e7eb",
-                  borderRadius: "8px",
-                }}
-              />
-              <Legend />
-              <Bar dataKey="revenue" fill="#10b981" radius={[4, 4, 0, 0]} />
-              <Bar dataKey="expenses" fill="#ef4444" radius={[4, 4, 0, 0]} />
-            </BarChart>
-          </ResponsiveContainer>
-        </div>
-      </div>
-
-      {/* Recent Activity */}
-      <div className="bg-white rounded-lg border border-gray-200">
-        <div className="px-6 py-4 border-b border-gray-200">
-          <h2 className="text-lg font-semibold text-gray-900">Recent Activity</h2>
-        </div>
-        <div className="divide-y divide-gray-200">
-          {recentActivity.map((activity, index) => {
-            const statusColors = {
-              success: "bg-green-100 text-green-700",
-              warning: "bg-yellow-100 text-yellow-700",
-              error: "bg-red-100 text-red-700",
-              info: "bg-blue-100 text-blue-700",
-            };
-
-            return (
-              <div key={index} className="px-6 py-4 flex items-center justify-between hover:bg-gray-50">
-                <div className="flex-1">
-                  <p className="font-medium text-gray-900">{activity.user}</p>
-                  <p className="text-sm text-gray-600">{activity.action}</p>
+      ) : (
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
+          {tiles.map(tile => (
+            <div key={tile.key} className={`${tile.color} rounded-xl p-4 text-white shadow-sm`}>
+              <div className="flex items-start justify-between">
+                <div className="flex-1 min-w-0">
+                  <p className="text-white/80 text-xs font-medium truncate">{tile.label}</p>
+                  <p className="text-2xl font-bold mt-1 leading-none">{get(tile.key)}</p>
+                  <p className="text-white/70 text-xs mt-1 truncate">{tile.desc}</p>
                 </div>
-                <div className="flex items-center gap-4">
-                  <span className="text-sm text-gray-500">{activity.time}</span>
-                  <span
-                    className={`px-2.5 py-1 rounded-full text-xs font-medium ${
-                      statusColors[activity.status as keyof typeof statusColors]
-                    }`}
-                  >
-                    {activity.status}
-                  </span>
-                </div>
+                <span className="text-2xl ml-2 shrink-0">{tile.emoji}</span>
               </div>
-            );
-          })}
+            </div>
+          ))}
         </div>
-      </div>
+      )}
+
+      {/* Quick stats bar */}
+      {stats && (
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+          <div className="bg-white rounded-xl border border-gray-200 p-5">
+            <p className="text-xs text-gray-500 uppercase tracking-wider font-semibold mb-3">Client Status</p>
+            <div className="space-y-2">
+              {[
+                { label: "Active", value: stats.runningClients, color: "bg-emerald-500" },
+                { label: "Inactive / Suspended", value: stats.inactiveClients, color: "bg-orange-400" },
+                { label: "Blocked", value: stats.blockedClients, color: "bg-red-500" },
+                { label: "Left", value: stats.leftClients, color: "bg-gray-400" },
+              ].map(item => {
+                const total = stats.totalClients || 1;
+                const pct = Math.round((item.value / total) * 100);
+                return (
+                  <div key={item.label}>
+                    <div className="flex justify-between text-xs text-gray-600 mb-0.5">
+                      <span>{item.label}</span>
+                      <span className="font-semibold">{item.value.toLocaleString()} ({pct}%)</span>
+                    </div>
+                    <div className="h-1.5 bg-gray-100 rounded-full overflow-hidden">
+                      <div className={`h-full ${item.color} rounded-full`} style={{ width: `${pct}%` }} />
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          <div className="bg-white rounded-xl border border-gray-200 p-5">
+            <p className="text-xs text-gray-500 uppercase tracking-wider font-semibold mb-3">Billing This Month</p>
+            <div className="space-y-3">
+              {[
+                { label: "Paid",           value: stats.paidClients,     color: "text-emerald-600", bg: "bg-emerald-50" },
+                { label: "Partially Paid", value: stats.partialPaid,     color: "text-blue-600",    bg: "bg-blue-50" },
+                { label: "Unpaid",         value: stats.unpaidClients,   color: "text-red-600",     bg: "bg-red-50" },
+                { label: "Bill Expired",   value: stats.billDateExpire,  color: "text-orange-600",  bg: "bg-orange-50" },
+              ].map(item => (
+                <div key={item.label} className={`flex justify-between items-center px-3 py-2 ${item.bg} rounded-lg`}>
+                  <span className="text-xs text-gray-600">{item.label}</span>
+                  <span className={`text-sm font-bold ${item.color}`}>{item.value.toLocaleString()}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="bg-white rounded-xl border border-gray-200 p-5">
+            <p className="text-xs text-gray-500 uppercase tracking-wider font-semibold mb-3">Revenue Summary</p>
+            <div className="space-y-4">
+              <div>
+                <p className="text-xs text-gray-500">Total Revenue Collected</p>
+                <p className="text-2xl font-bold text-emerald-600">৳{stats.totalRevenue.toLocaleString()}</p>
+              </div>
+              <div>
+                <p className="text-xs text-gray-500">Pending Dues</p>
+                <p className="text-xl font-bold text-red-500">৳{stats.pendingAmount.toLocaleString()}</p>
+                <p className="text-xs text-gray-400">{stats.pendingCount} invoices pending</p>
+              </div>
+              <div>
+                <p className="text-xs text-gray-500">Online Now</p>
+                <p className="text-lg font-bold text-cyan-600">{stats.onlineClients} clients</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
