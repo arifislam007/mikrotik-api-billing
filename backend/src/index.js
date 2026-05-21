@@ -302,7 +302,6 @@ const importUsersFromMikrotik = async (server, resellerId = null, usernames = nu
 };
 
 const pushUsersToMikrotik = async (server, resellerId = null) => {
-  // Only push users assigned to this specific server
   const clauses = ['(server_id = ? OR server_id IS NULL)'];
   const params = [server.id];
   if (resellerId) { clauses.push('reseller_id = ?'); params.push(resellerId); }
@@ -315,11 +314,11 @@ const pushUsersToMikrotik = async (server, resellerId = null) => {
   let created = 0, updated = 0, skipped = 0;
   for (const u of local) {
     const remote = remoteMap.get(u.username);
-    const disabled = u.status !== 'active';
+    const disabled = u.status !== 'active';   // boolean, not string
     const prof = u.profile || 'default';
     const pass = u.pppoe_password || '';
     if (!remote) {
-      const body = { name: u.username, profile: prof, disabled: String(disabled) };
+      const body = { name: u.username, profile: prof, disabled };
       if (pass) body.password = pass;
       await mikrotikRequest(server, '/ppp/secret', { method: 'POST', body });
       created++;
@@ -329,11 +328,45 @@ const pushUsersToMikrotik = async (server, resellerId = null) => {
       const statusMatch = rd === disabled;
       if (profileMatch && statusMatch) { skipped++; continue; }
       await mikrotikRequest(server, `/ppp/secret/${encodeURIComponent(remote['.id'])}`,
-        { method: 'PATCH', body: { profile: prof, disabled: String(disabled) } });
+        { method: 'PATCH', body: { profile: prof, disabled } });
       updated++;
     }
   }
   return { totalLocalUsers: local.length, created, updated, skipped };
+};
+
+// Push a single user to its assigned MikroTik server immediately (app data takes priority)
+const syncSingleUserToMikrotik = async (user) => {
+  try {
+    let server = user.server_id ? await getMikrotikServer(user.server_id) : null;
+    if (!server) {
+      const rows = await query('SELECT * FROM mikrotik_servers WHERE is_default=1 AND enabled=1 LIMIT 1');
+      server = rows[0] || null;
+    }
+    if (!server || !server.enabled) return;
+
+    const disabled = user.status !== 'active';
+    const prof = user.profile || 'default';
+
+    // Find existing secret by name using REST filter
+    const found = await mikrotikRequest(server, `/ppp/secret?name=${encodeURIComponent(user.username)}`);
+    const existing = Array.isArray(found) ? found.find(s => s.name === user.username) : null;
+
+    if (existing) {
+      // App priority: always overwrite remote with local values
+      const body = { profile: prof, disabled };
+      if (user.pppoe_password) body.password = user.pppoe_password;
+      await mikrotikRequest(server, `/ppp/secret/${encodeURIComponent(existing['.id'])}`, { method: 'PATCH', body });
+    } else {
+      const body = { name: user.username, profile: prof, disabled };
+      if (user.pppoe_password) body.password = user.pppoe_password;
+      await mikrotikRequest(server, '/ppp/secret', { method: 'POST', body });
+    }
+    await pool.execute("UPDATE users SET mikrotik_status='synced' WHERE id=?", [user.id]);
+  } catch (e) {
+    console.error(`[MikroTik] sync failed for ${user.username}:`, e.message);
+    await pool.execute("UPDATE users SET mikrotik_status='error' WHERE id=?", [user.id]).catch(() => {});
+  }
 };
 
 // ── Invoice Number ────────────────────────────────────────────
@@ -725,6 +758,8 @@ app.post('/api/clients', requireAuth, requireAdmin, async (req, res) => {
     );
     const rows = await query(`SELECT ${clientSelect} ${clientJoins} WHERE u.id=?`, [id]);
     res.status(201).json(rows[0]);
+    // Fire-and-forget: sync to MikroTik after responding (app data is source of truth)
+    syncSingleUserToMikrotik({ id, username, pppoe_password: pppoe_password||null, profile: profile||null, status, server_id: server_id||null });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -765,6 +800,9 @@ app.put('/api/clients/:id', requireAuth, requireAdmin, async (req, res) => {
     const rows = await query(`SELECT ${clientSelect} ${clientJoins} WHERE u.id=?`, [req.params.id]);
     if (!rows.length) return res.status(404).json({ error: 'Client not found' });
     res.json(rows[0]);
+    // Fire-and-forget: sync updated client to MikroTik (app data is source of truth)
+    const u = rows[0];
+    syncSingleUserToMikrotik({ id: u.id, username: u.username, pppoe_password: u.pppoe_password, profile: u.profile, status: u.status, server_id: u.server_id });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
