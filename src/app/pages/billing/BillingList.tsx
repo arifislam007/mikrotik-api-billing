@@ -1,6 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
-import { Plus, X, CheckCircle, Clock, AlertCircle, Filter, Zap, List } from "lucide-react";
-import { billingService } from "../../services/api";
+import { Plus, X, CheckCircle, Clock, AlertCircle, Filter, Zap, List, RefreshCw } from "lucide-react";
 
 const API = import.meta.env.VITE_API_URL || (import.meta.env.DEV ? "http://localhost:8080/api" : "/api");
 const authH = () => {
@@ -42,6 +41,9 @@ const emptyQuickPay: QuickPayForm = { amount: "", payment_method: "Cash", receiv
 export function BillingList() {
   const [tab, setTab] = useState<"dashboard" | "invoices">("dashboard");
 
+  // --- Generate bills state ---
+  const [generating, setGenerating] = useState(false);
+
   // --- Dashboard state ---
   const [billingClients, setBillingClients] = useState<BillingClient[]>([]);
   const [dashLoading, setDashLoading] = useState(true);
@@ -68,6 +70,23 @@ export function BillingList() {
   const [formErr, setFormErr] = useState("");
 
   const showMsg = (m: string) => { setMsg(m); setTimeout(() => setMsg(""), 3000); };
+
+  const handleGenerate = async () => {
+    setGenerating(true);
+    try {
+      const res = await fetch(`${API}/billing/generate`, {
+        method: "POST",
+        headers: authH(),
+        body: JSON.stringify({ month: dashMonth }),
+      });
+      const data = await res.json();
+      if (!res.ok) { showMsg(`Error: ${data.error}`); }
+      else { showMsg(`Generated ${data.created} invoice(s) for ${data.month} (${data.skipped} already existed)`); }
+      loadDashboard();
+      loadInvoices();
+    } catch { showMsg("Network error"); }
+    setGenerating(false);
+  };
 
   // Load billing dashboard clients
   const loadDashboard = useCallback(async () => {
@@ -221,7 +240,14 @@ export function BillingList() {
                 </button>
               ))}
             </div>
-            <span className="ml-auto text-xs text-gray-400">{filteredClients.length} clients</span>
+            <div className="ml-auto flex items-center gap-2">
+              <span className="text-xs text-gray-400">{filteredClients.length} clients</span>
+              <button onClick={handleGenerate} disabled={generating}
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-violet-600 hover:bg-violet-700 disabled:bg-violet-300 text-white rounded-lg text-xs font-medium transition-colors">
+                <RefreshCw size={13} className={generating ? "animate-spin" : ""} />
+                {generating ? "Generating…" : "Generate Bills"}
+              </button>
+            </div>
           </div>
 
           {/* Summary tiles */}

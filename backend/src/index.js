@@ -860,6 +860,31 @@ app.delete('/api/users/:id', requireAuth, requireAdmin, async (req, res) => {
 const billSelect = `b.*, u.username as customer, u.full_name as customer_name, u.mobile as customer_mobile`;
 const billJoin   = `FROM billing b LEFT JOIN users u ON b.user_id=u.id`;
 
+// Auto-generate pending invoices for all active billing users for a given month.
+// Skips users that already have an invoice for that month.
+const generateMonthlyInvoices = async (month) => {
+  const bm = month || new Date().toISOString().slice(0, 7);
+  const users = await query(
+    `SELECT id, monthly_bill FROM users
+     WHERE billing_status='active' AND (is_left=0 OR is_left IS NULL) AND monthly_bill > 0`
+  );
+  let created = 0, skipped = 0;
+  for (const u of users) {
+    const existing = await query('SELECT id FROM billing WHERE user_id=? AND billing_month=?', [u.id, bm]);
+    if (existing.length > 0) { skipped++; continue; }
+    const id = uuidv4();
+    const amt = Number(u.monthly_bill);
+    await pool.execute(
+      `INSERT INTO billing (id,user_id,invoice_number,billing_month,amount,received_amount,vat,discount,balance_due,status)
+       VALUES (?,?,?,?,?,0,0,0,?,?)`,
+      [id, u.id, await generateInvoiceNumber(), bm, amt, amt, 'pending']
+    );
+    created++;
+  }
+  console.log(`[Billing] Auto-generate ${bm}: created=${created}, skipped=${skipped}`);
+  return { created, skipped, total: users.length, month: bm };
+};
+
 app.get('/api/billing', requireAuth, requireAdmin, async (req, res) => {
   try {
     const { month, status, zone_id } = req.query;
@@ -907,6 +932,15 @@ app.delete('/api/billing/:id', requireAuth, requireAdmin, async (req, res) => {
     const [r] = await pool.execute('DELETE FROM billing WHERE id=?',[req.params.id]);
     if (r.affectedRows===0) return res.status(404).json({ error: 'Invoice not found' });
     res.json({ message: 'Deleted' });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Bulk generate pending invoices for all active billing users for a given month
+app.post('/api/billing/generate', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const month = req.body?.month || new Date().toISOString().slice(0, 7);
+    const result = await generateMonthlyInvoices(month);
+    res.json(result);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -1310,6 +1344,23 @@ app.post('/api/reseller/sync', requireAuth, async (req, res) => {
 
 // ── Bootstrap ─────────────────────────────────────────────────
 
+// Schedule monthly invoice auto-generation at the start of each new month.
+const scheduleMonthlyGeneration = () => {
+  const now = new Date();
+  const next = new Date(now.getFullYear(), now.getMonth() + 1, 1, 0, 5, 0); // 1st of next month, 00:05
+  const delay = next - now;
+  setTimeout(async () => {
+    await generateMonthlyInvoices(next.toISOString().slice(0, 7)).catch(e => console.error('[Billing] Auto-gen failed:', e));
+    scheduleMonthlyGeneration(); // reschedule for next month
+  }, delay);
+  console.log(`[Billing] Next auto-generation scheduled: ${next.toISOString()}`);
+};
+
 ensureSchema()
-  .then(() => app.listen(PORT, () => console.log(`Backend API on port ${PORT}`)))
+  .then(async () => {
+    app.listen(PORT, () => console.log(`Backend API on port ${PORT}`));
+    // Auto-generate invoices for the current month on startup (idempotent — skips existing)
+    await generateMonthlyInvoices(new Date().toISOString().slice(0, 7)).catch(e => console.error('[Billing] Startup auto-gen failed:', e));
+    scheduleMonthlyGeneration();
+  })
   .catch(e => { console.error('Schema init failed:', e); process.exit(1); });
