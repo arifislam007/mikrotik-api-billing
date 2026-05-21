@@ -314,21 +314,26 @@ const pushUsersToMikrotik = async (server, resellerId = null) => {
   let created = 0, updated = 0, skipped = 0;
   for (const u of local) {
     const remote = remoteMap.get(u.username);
-    const disabled = u.status !== 'active';   // boolean, not string
+    const disabled = u.status !== 'active';
     const prof = u.profile || 'default';
     const pass = u.pppoe_password || '';
+    const comment = disabled ? 'Suspended' : 'Active';
     if (!remote) {
-      const body = { name: u.username, profile: prof, disabled };
+      // PUT to create — matches RouterOS REST API spec
+      const body = { name: u.username, service: 'pppoe', profile: prof, disabled, comment };
       if (pass) body.password = pass;
-      await mikrotikRequest(server, '/ppp/secret', { method: 'POST', body });
+      await mikrotikRequest(server, '/ppp/secret', { method: 'PUT', body });
       created++;
     } else {
       const rd = remote.disabled === true || remote.disabled === 'true';
       const profileMatch = (remote.profile || 'default') === prof;
       const statusMatch = rd === disabled;
       if (profileMatch && statusMatch) { skipped++; continue; }
-      await mikrotikRequest(server, `/ppp/secret/${encodeURIComponent(remote['.id'])}`,
-        { method: 'PATCH', body: { profile: prof, disabled } });
+      // PATCH by name using .query — no .id lookup needed
+      await mikrotikRequest(server, '/ppp/secret', {
+        method: 'PATCH',
+        body: { '.query': [`name=${u.username}`], profile: prof, disabled, comment },
+      });
       updated++;
     }
   }
@@ -347,25 +352,47 @@ const syncSingleUserToMikrotik = async (user) => {
 
     const disabled = user.status !== 'active';
     const prof = user.profile || 'default';
+    const comment = disabled ? 'Suspended' : 'Active';
 
-    // Find existing secret by name using REST filter
+    // Check if secret already exists on router
     const found = await mikrotikRequest(server, `/ppp/secret?name=${encodeURIComponent(user.username)}`);
     const existing = Array.isArray(found) ? found.find(s => s.name === user.username) : null;
 
     if (existing) {
-      // App priority: always overwrite remote with local values
-      const body = { profile: prof, disabled };
+      // PATCH by name using .query — app data takes priority
+      const body = { '.query': [`name=${user.username}`], profile: prof, disabled, comment };
       if (user.pppoe_password) body.password = user.pppoe_password;
-      await mikrotikRequest(server, `/ppp/secret/${encodeURIComponent(existing['.id'])}`, { method: 'PATCH', body });
+      await mikrotikRequest(server, '/ppp/secret', { method: 'PATCH', body });
     } else {
-      const body = { name: user.username, profile: prof, disabled };
+      // PUT to create new secret
+      const body = { name: user.username, service: 'pppoe', profile: prof, disabled, comment };
       if (user.pppoe_password) body.password = user.pppoe_password;
-      await mikrotikRequest(server, '/ppp/secret', { method: 'POST', body });
+      await mikrotikRequest(server, '/ppp/secret', { method: 'PUT', body });
     }
     await pool.execute("UPDATE users SET mikrotik_status='synced' WHERE id=?", [user.id]);
   } catch (e) {
     console.error(`[MikroTik] sync failed for ${user.username}:`, e.message);
     await pool.execute("UPDATE users SET mikrotik_status='error' WHERE id=?", [user.id]).catch(() => {});
+  }
+};
+
+// Delete a single user from MikroTik when removed from the app
+const deleteSingleUserFromMikrotik = async (username, serverId) => {
+  try {
+    let server = serverId ? await getMikrotikServer(serverId) : null;
+    if (!server) {
+      const rows = await query('SELECT * FROM mikrotik_servers WHERE is_default=1 AND enabled=1 LIMIT 1');
+      server = rows[0] || null;
+    }
+    if (!server || !server.enabled) return;
+    // Find the internal .id first, then remove via POST /ppp/secret/remove
+    const found = await mikrotikRequest(server, `/ppp/secret?name=${encodeURIComponent(username)}`);
+    const existing = Array.isArray(found) ? found.find(s => s.name === username) : null;
+    if (!existing) return; // already absent on router
+    await mikrotikRequest(server, '/ppp/secret/remove', { method: 'POST', body: { '.id': existing['.id'] } });
+    console.log(`[MikroTik] Deleted user: ${username}`);
+  } catch (e) {
+    console.error(`[MikroTik] delete failed for ${username}:`, e.message);
   }
 };
 
@@ -808,9 +835,13 @@ app.put('/api/clients/:id', requireAuth, requireAdmin, async (req, res) => {
 
 app.delete('/api/clients/:id', requireAuth, requireAdmin, async (req, res) => {
   try {
-    const [r] = await pool.execute('DELETE FROM users WHERE id=?',[req.params.id]);
-    if (r.affectedRows===0) return res.status(404).json({ error: 'Client not found' });
+    // Capture user info before deletion so we can mirror to MikroTik
+    const before = await query('SELECT username, server_id FROM users WHERE id=?', [req.params.id]);
+    const [r] = await pool.execute('DELETE FROM users WHERE id=?', [req.params.id]);
+    if (r.affectedRows === 0) return res.status(404).json({ error: 'Client not found' });
     res.json({ message: 'Client deleted' });
+    // Fire-and-forget: remove from MikroTik after responding
+    if (before.length > 0) deleteSingleUserFromMikrotik(before[0].username, before[0].server_id);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
