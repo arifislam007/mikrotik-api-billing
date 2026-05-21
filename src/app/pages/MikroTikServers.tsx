@@ -53,7 +53,7 @@ export function MikroTikServers() {
   const [panelLoading, setPanelLoading] = useState(false);
   const [panelResult, setPanelResult] = useState<string | null>(null);
   const [panelError, setPanelError] = useState<string | null>(null);
-  const [filterMode, setFilterMode] = useState<"all" | "new" | "existing">("all");
+  const [filterMode, setFilterMode] = useState<"all" | "new" | "existing">("new");
 
   useEffect(() => { fetchServers(); }, []);
 
@@ -74,7 +74,7 @@ export function MikroTikServers() {
     }
     setPanelServerId(server.id); setPanelMode(mode);
     setPanelResult(null); setPanelError(null);
-    setRemoteUsers([]); setSelectedUsernames(new Set()); setFilterMode("all");
+    setRemoteUsers([]); setSelectedUsernames(new Set()); setFilterMode("new");
     if (mode === "import") {
       setPanelLoading(true);
       try {

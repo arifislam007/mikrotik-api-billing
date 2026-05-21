@@ -176,6 +176,10 @@ const ensureSchema = async () => {
     ['billing', 'approved_by',       'VARCHAR(100)'],
     ['billing', 'note',              'TEXT'],
     ['billing', 'transaction_status',"VARCHAR(20) DEFAULT 'pending'"],
+    ['billing', 'discount_reason',   'VARCHAR(255)'],
+    ['billing', 'is_withdrawn',      'BOOLEAN DEFAULT FALSE'],
+    ['billing', 'withdrawn_at',      'DATETIME'],
+    ['billing', 'withdrawn_by',      'VARCHAR(100)'],
     ['billing', 'updated_at',        'DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP'],
     // resellers
     ['resellers', 'commission_rate', 'DECIMAL(5,2) DEFAULT 15.00'],
@@ -393,6 +397,26 @@ const deleteSingleUserFromMikrotik = async (username, serverId) => {
     console.log(`[MikroTik] Deleted user: ${username}`);
   } catch (e) {
     console.error(`[MikroTik] delete failed for ${username}:`, e.message);
+  }
+};
+
+// Disable all users whose expiry_date has passed — runs on startup and every hour
+const disableExpiredUsers = async () => {
+  try {
+    const expired = await query(
+      `SELECT id, username, profile, pppoe_password, server_id FROM users
+       WHERE expiry_date IS NOT NULL AND expiry_date < CURDATE() AND status = 'active'`
+    );
+    if (expired.length === 0) return;
+    console.log(`[Expiry] Disabling ${expired.length} expired user(s)`);
+    for (const u of expired) {
+      await pool.execute(
+        "UPDATE users SET status='disabled', billing_status='suspended' WHERE id=?", [u.id]
+      );
+      syncSingleUserToMikrotik({ ...u, status: 'disabled' });
+    }
+  } catch (e) {
+    console.error('[Expiry] Check failed:', e.message);
   }
 };
 
@@ -930,14 +954,17 @@ app.get('/api/billing', requireAuth, requireAdmin, async (req, res) => {
 
 app.post('/api/billing', requireAuth, requireAdmin, async (req, res) => {
   try {
-    const { user_id, amount, status='pending', due_date, paid_date, payment_method, billing_month, vat=0, discount=0, note, received_by } = req.body;
+    const { user_id, amount, status='pending', due_date, paid_date, payment_method, billing_month, vat=0, discount=0, discount_reason, note, received_by } = req.body;
     if (!user_id||!amount) return res.status(400).json({ error: 'user_id and amount required' });
+    if (Number(discount) > 0 && !discount_reason?.trim()) return res.status(400).json({ error: 'Discount reason is required when applying a discount' });
     const id = uuidv4();
     const bm = billing_month || new Date().toISOString().slice(0,7);
     const received = status==='paid' ? amount : 0;
-    const balance = amount - received - discount;
-    await pool.execute(`INSERT INTO billing (id,user_id,invoice_number,billing_month,amount,received_amount,vat,discount,balance_due,status,due_date,paid_date,payment_method,note,received_by) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-      [id,user_id,await generateInvoiceNumber(),bm,amount,received,vat,discount,balance,status,due_date||null,paid_date||null,payment_method||null,note||null,received_by||null]);
+    const balance = amount - received - Number(discount);
+    await pool.execute(
+      `INSERT INTO billing (id,user_id,invoice_number,billing_month,amount,received_amount,vat,discount,discount_reason,balance_due,status,due_date,paid_date,payment_method,note,received_by)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      [id,user_id,await generateInvoiceNumber(),bm,amount,received,vat,discount,discount_reason||null,balance,status,due_date||null,paid_date||null,payment_method||null,note||null,received_by||null]);
     res.status(201).json((await query(`SELECT ${billSelect} ${billJoin} WHERE b.id=?`,[id]))[0]);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -1011,31 +1038,65 @@ app.get('/api/billing/clients', requireAuth, requireAdmin, async (req, res) => {
 // Quick-pay: create invoice (if needed) and mark paid in one step
 app.post('/api/billing/quick-pay', requireAuth, requireAdmin, async (req, res) => {
   try {
-    const { user_id, month, amount, payment_method, received_by, vat = 0, discount = 0, note } = req.body;
+    const { user_id, month, amount, payment_method, received_by, vat = 0, discount = 0, discount_reason, note } = req.body;
     if (!user_id || !amount || !payment_method) return res.status(400).json({ error: 'user_id, amount, and payment_method required' });
+    if (Number(discount) > 0 && !discount_reason?.trim()) return res.status(400).json({ error: 'Discount reason is required when applying a discount' });
     const bm = month || new Date().toISOString().slice(0, 7);
     const today = new Date().toISOString().split('T')[0];
     const received = Number(amount) - Number(discount);
-    const balance = 0; // fully paid
+    const balance = 0;
 
-    // Check if invoice already exists for this month
     const existing = await query('SELECT id FROM billing WHERE user_id=? AND billing_month=?', [user_id, bm]);
     let invoiceId;
     if (existing.length > 0) {
       invoiceId = existing[0].id;
-      await pool.execute(`UPDATE billing SET
-        status='paid', received_amount=?, balance_due=0, vat=?, discount=?,
-        paid_date=?, payment_method=?, received_by=COALESCE(?,received_by)
-        WHERE id=?`,
-        [received, vat, discount, today, payment_method, received_by || null, invoiceId]);
+      await pool.execute(
+        `UPDATE billing SET status='paid', received_amount=?, balance_due=0, vat=?,
+         discount=?, discount_reason=COALESCE(?,discount_reason),
+         paid_date=?, payment_method=?, received_by=COALESCE(?,received_by), is_withdrawn=0
+         WHERE id=?`,
+        [received, vat, discount, discount_reason || null, today, payment_method, received_by || null, invoiceId]);
     } else {
       invoiceId = uuidv4();
-      await pool.execute(`INSERT INTO billing
-        (id, user_id, invoice_number, billing_month, amount, received_amount, vat, discount, balance_due, status, paid_date, payment_method, note, received_by)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-        [invoiceId, user_id, await generateInvoiceNumber(), bm, amount, received, vat, discount, balance, 'paid', today, payment_method, note || null, received_by || null]);
+      await pool.execute(
+        `INSERT INTO billing
+         (id,user_id,invoice_number,billing_month,amount,received_amount,vat,discount,discount_reason,balance_due,status,paid_date,payment_method,note,received_by)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+        [invoiceId, user_id, await generateInvoiceNumber(), bm, amount, received, vat, discount, discount_reason || null, balance, 'paid', today, payment_method, note || null, received_by || null]);
     }
     res.json((await query(`SELECT ${billSelect} ${billJoin} WHERE b.id=?`, [invoiceId]))[0]);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Billing history for a single client
+app.get('/api/clients/:id/billing-history', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const rows = await query(
+      `SELECT b.*, u.username as customer, u.full_name as customer_name
+       FROM billing b LEFT JOIN users u ON b.user_id = u.id
+       WHERE b.user_id = ? ORDER BY b.billing_month DESC, b.created_at DESC`,
+      [req.params.id]
+    );
+    res.json(rows);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Withdraw (reverse) a billing invoice — sets back to pending, clears payment
+app.post('/api/billing/:id/withdraw', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const { withdrawn_by, reason } = req.body;
+    const rows = await query('SELECT * FROM billing WHERE id=?', [req.params.id]);
+    if (!rows.length) return res.status(404).json({ error: 'Invoice not found' });
+    const inv = rows[0];
+    if (inv.is_withdrawn) return res.status(400).json({ error: 'Already withdrawn' });
+    await pool.execute(
+      `UPDATE billing SET status='pending', received_amount=0, balance_due=amount,
+       paid_date=NULL, payment_method=NULL, is_withdrawn=1,
+       withdrawn_at=NOW(), withdrawn_by=?, note=CONCAT(COALESCE(note,''), ' [Withdrawn: ', ?, ']')
+       WHERE id=?`,
+      [withdrawn_by || 'admin', reason || '', req.params.id]
+    );
+    res.json((await query(`SELECT ${billSelect} ${billJoin} WHERE b.id=?`, [req.params.id]))[0]);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -1393,5 +1454,8 @@ ensureSchema()
     // Auto-generate invoices for the current month on startup (idempotent — skips existing)
     await generateMonthlyInvoices(new Date().toISOString().slice(0, 7)).catch(e => console.error('[Billing] Startup auto-gen failed:', e));
     scheduleMonthlyGeneration();
+    // Disable expired users immediately on startup, then recheck every hour
+    await disableExpiredUsers();
+    setInterval(disableExpiredUsers, 60 * 60 * 1000);
   })
   .catch(e => { console.error('Schema init failed:', e); process.exit(1); });

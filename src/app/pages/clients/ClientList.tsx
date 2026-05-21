@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router";
-import { Plus, Search, Filter, Edit, Power, PowerOff, Trash2, X, Check, Wifi, WifiOff } from "lucide-react";
+import { Plus, Search, Filter, Edit, Power, PowerOff, Trash2, Wifi, WifiOff } from "lucide-react";
 import { ConfirmDialog } from "../../components/ConfirmDialog";
+import { EditClient } from "./EditClient";
 
 interface Client {
   id: string;
@@ -45,7 +46,6 @@ export function ClientList({ leftOnly = false }: { leftOnly?: boolean }) {
   const [statusFilter, setStatusFilter] = useState("");
   const [showFilters, setShowFilters] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [editData, setEditData] = useState<Partial<Client>>({});
   const [deleteTarget, setDeleteTarget] = useState<Client | null>(null);
   const [msg, setMsg] = useState("");
 
@@ -78,14 +78,6 @@ export function ClientList({ leftOnly = false }: { leftOnly?: boolean }) {
     showMsg(`${deleteTarget.username} deleted`);
   };
 
-  const saveEdit = async () => {
-    if (!editingId) return;
-    await fetch(`${API}/clients/${editingId}`, { method: "PUT", headers: headers(), body: JSON.stringify(editData) });
-    fetchClients();
-    setEditingId(null);
-    showMsg("Client updated");
-  };
-
   const filtered = clients.filter(c => {
     const q = search.toLowerCase();
     const matchSearch = !search || c.username.toLowerCase().includes(q) ||
@@ -93,8 +85,6 @@ export function ClientList({ leftOnly = false }: { leftOnly?: boolean }) {
     const matchStatus = !statusFilter || c.billing_status === statusFilter || c.status === statusFilter;
     return matchSearch && matchStatus;
   });
-
-  const inp = "px-2 py-1 border border-gray-300 rounded text-xs focus:outline-none focus:ring-1 focus:ring-cyan-500";
 
   return (
     <div className="space-y-5">
@@ -151,35 +141,7 @@ export function ClientList({ leftOnly = false }: { leftOnly?: boolean }) {
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
-              {filtered.map(c => editingId === c.id ? (
-                <tr key={c.id} className="bg-cyan-50">
-                  <td className="px-3 py-2"><input value={editData.username||""} onChange={e=>setEditData(p=>({...p,username:e.target.value}))} className={inp} /></td>
-                  <td className="px-3 py-2"><input value={editData.full_name||""} onChange={e=>setEditData(p=>({...p,full_name:e.target.value}))} className={inp} /></td>
-                  <td className="px-3 py-2"><input value={editData.mobile||""} onChange={e=>setEditData(p=>({...p,mobile:e.target.value}))} className={inp} /></td>
-                  <td className="px-3 py-2 text-gray-400 text-xs">{c.zone_name||"—"}</td>
-                  <td className="px-3 py-2 text-gray-400 text-xs">{c.connection_type_name||"—"}</td>
-                  <td className="px-3 py-2 text-gray-400 text-xs">{c.package_name||"—"}</td>
-                  <td className="px-3 py-2"><input type="number" value={editData.monthly_bill||""} onChange={e=>setEditData(p=>({...p,monthly_bill:Number(e.target.value)}))} className={inp+" w-20"} /></td>
-                  <td className="px-3 py-2"><input value={editData.mac_address||""} onChange={e=>setEditData(p=>({...p,mac_address:e.target.value}))} className={inp} /></td>
-                  <td className="px-3 py-2 text-gray-400 text-xs">{c.server_name||"—"}</td>
-                  <td className="px-3 py-2">
-                    <select value={editData.billing_status||c.billing_status} onChange={e=>setEditData(p=>({...p,billing_status:e.target.value}))} className={inp}>
-                      {["active","suspended","terminated","waiver"].map(s=><option key={s}>{s}</option>)}
-                    </select>
-                  </td>
-                  <td className="px-3 py-2">
-                    <select value={editData.status||c.status} onChange={e=>setEditData(p=>({...p,status:e.target.value}))} className={inp}>
-                      {["active","disabled","expired"].map(s=><option key={s}>{s}</option>)}
-                    </select>
-                  </td>
-                  <td className="px-3 py-2">
-                    <div className="flex gap-1">
-                      <button onClick={saveEdit} className="p-1 hover:bg-green-100 rounded"><Check size={14} className="text-green-600" /></button>
-                      <button onClick={() => setEditingId(null)} className="p-1 hover:bg-gray-100 rounded"><X size={14} className="text-gray-500" /></button>
-                    </div>
-                  </td>
-                </tr>
-              ) : (
+              {filtered.map(c => (
                 <tr key={c.id} className="hover:bg-gray-50 transition-colors">
                   <td className="px-4 py-3">
                     <div className="font-medium text-gray-900">{c.username}</div>
@@ -205,8 +167,9 @@ export function ClientList({ leftOnly = false }: { leftOnly?: boolean }) {
                   </td>
                   <td className="px-4 py-3">
                     <div className="flex items-center gap-1">
-                      <button onClick={() => { setEditingId(c.id); setEditData({ username: c.username, full_name: c.full_name||"", mobile: c.mobile||"", mac_address: c.mac_address||"", monthly_bill: c.monthly_bill||0, billing_status: c.billing_status, status: c.status }); }}
-                        className="p-1 hover:bg-gray-100 rounded" title="Edit"><Edit size={14} className="text-gray-600" /></button>
+                      <button onClick={() => setEditingId(c.id)} className="p-1 hover:bg-cyan-100 rounded" title="Edit">
+                        <Edit size={14} className="text-cyan-600" />
+                      </button>
                       {c.status === "active"
                         ? <button onClick={() => toggleStatus(c)} className="p-1 hover:bg-red-100 rounded" title="Disable"><PowerOff size={14} className="text-red-500" /></button>
                         : <button onClick={() => toggleStatus(c)} className="p-1 hover:bg-green-100 rounded" title="Enable"><Power size={14} className="text-green-600" /></button>
@@ -225,6 +188,14 @@ export function ClientList({ leftOnly = false }: { leftOnly?: boolean }) {
 
       <ConfirmDialog isOpen={!!deleteTarget} onClose={() => setDeleteTarget(null)} onConfirm={deleteClient}
         title="Delete Client" message={`Permanently delete ${deleteTarget?.username}?`} confirmText="Delete" cancelText="Cancel" variant="danger" />
+
+      {editingId && (
+        <EditClient
+          clientId={editingId}
+          onClose={() => setEditingId(null)}
+          onSaved={() => { setEditingId(null); fetchClients(); showMsg("Client updated"); }}
+        />
+      )}
     </div>
   );
 }
