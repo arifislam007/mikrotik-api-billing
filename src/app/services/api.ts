@@ -114,6 +114,7 @@ export const mikrotikService = {
     api.post(`/mikrotik/servers/${id}/import-users`, usernames ? { usernames } : {}),
   pushUsers: (id: string) => api.post(`/mikrotik/servers/${id}/sync`, { direction: 'push' }),
   syncUsers: (id: string, direction = 'both') => api.post(`/mikrotik/servers/${id}/sync`, { direction }),
+  syncMac: (id: string) => api.post(`/mikrotik/servers/${id}/sync-mac`, {}),
 };
 
 export const packageService = {

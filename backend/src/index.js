@@ -731,6 +731,31 @@ app.post('/api/mikrotik/servers/:id/sync', requireAuth, requireAdmin, async (req
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// Sync MAC addresses and online status from active PPPoE sessions
+app.post('/api/mikrotik/servers/:id/sync-mac', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const s = await getMikrotikServer(req.params.id);
+    if (!s) return res.status(404).json({ error: 'Server not found' });
+    // First mark all users of this server as offline
+    await pool.execute("UPDATE users SET mikrotik_status='offline' WHERE server_id=?", [s.id]);
+    const active = await mikrotikRequest(s, '/ppp/active');
+    let updated = 0;
+    if (Array.isArray(active)) {
+      for (const a of active) {
+        if (!a.name) continue;
+        const mac = a['caller-id'] || null;
+        const [r] = await pool.execute(
+          "UPDATE users SET mac_address=COALESCE(?,mac_address), mikrotik_status='online' WHERE username=?",
+          [mac, a.name]
+        );
+        if (r.affectedRows > 0) updated++;
+      }
+    }
+    await pool.execute('UPDATE mikrotik_servers SET last_sync_at=NOW() WHERE id=?', [s.id]);
+    res.json({ message: 'MAC sync completed', onlineUsers: Array.isArray(active) ? active.length : 0, updated });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // ══════════════════════════════════════════════════════════════
 // CLIENTS (users table with ISP fields)
 // ══════════════════════════════════════════════════════════════

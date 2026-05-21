@@ -2,9 +2,9 @@ import { useEffect, useState } from "react";
 import { Button } from "../components/Button";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import {
-  Server, Plus, Edit, Trash2, Link2, Check, X, RefreshCw, Star, StarOff,
+  Server, Plus, Edit, Trash2, Link2, X, RefreshCw, Star, StarOff,
   Power, PowerOff, Clock, AlertCircle, CheckCircle, Download, Upload,
-  Eye, EyeOff, ChevronDown, ChevronUp,
+  Eye, EyeOff, ChevronDown, ChevronUp, Wifi,
 } from "lucide-react";
 import { mikrotikService } from "../services/api";
 
@@ -25,7 +25,51 @@ const emptyForm = {
 };
 
 type TestStatus = "idle" | "testing" | "ok" | "error";
-type PanelMode = "import" | "push" | null;
+type PanelMode = "import" | "push" | "sync-mac" | null;
+
+function FormFields({ form, onChange, isEdit = false }: { form: typeof emptyForm; onChange: (p: Partial<typeof emptyForm>) => void; isEdit?: boolean }) {
+  return (
+    <div className="space-y-4">
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+        {[
+          { label: "Server Name *", key: "name", placeholder: "e.g. Main Router" },
+          { label: "Host / IP *", key: "host", placeholder: "192.168.88.1" },
+          { label: "Username *", key: "username", placeholder: "admin" },
+        ].map(f => (
+          <div key={f.key}>
+            <label className="block text-xs font-medium text-gray-600 mb-1">{f.label}</label>
+            <input value={(form as Record<string, string>)[f.key]} placeholder={f.placeholder}
+              onChange={e => onChange({ [f.key]: e.target.value } as Partial<typeof emptyForm>)}
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+          </div>
+        ))}
+        <div>
+          <label className="block text-xs font-medium text-gray-600 mb-1">Port</label>
+          <input type="number" value={form.port} placeholder="8728"
+            onChange={e => onChange({ port: Number(e.target.value) || 8728 })}
+            className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+        </div>
+        <div>
+          <label className="block text-xs font-medium text-gray-600 mb-1">
+            Password {isEdit ? <span className="text-gray-400">(blank = keep current)</span> : <span className="text-red-500">*</span>}
+          </label>
+          <input type="password" value={form.password} placeholder={isEdit ? "••••••••" : "password"}
+            onChange={e => onChange({ password: e.target.value })}
+            className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+        </div>
+      </div>
+      <div className="flex flex-wrap gap-5">
+        {([["use_tls","Use TLS / HTTPS"],["allow_insecure","Allow insecure TLS"],["is_default","Set as default"],["enabled","Enabled"]] as [keyof typeof emptyForm, string][]).map(([key, label]) => (
+          <label key={key} className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer">
+            <input type="checkbox" checked={form[key] as boolean}
+              onChange={e => onChange({ [key]: e.target.checked } as Partial<typeof emptyForm>)} className="rounded" />
+            {label}
+          </label>
+        ))}
+      </div>
+    </div>
+  );
+}
 
 export function MikroTikServers() {
   const [servers, setServers] = useState<MikroTikServer[]>([]);
@@ -130,6 +174,17 @@ export function MikroTikServers() {
     } finally { setPanelLoading(false); }
   };
 
+  const handleSyncMac = async (serverId: string) => {
+    setPanelLoading(true); setPanelResult(null); setPanelError(null);
+    try {
+      const res = await mikrotikService.syncMac(serverId);
+      setPanelResult(`MAC sync complete — ${res.onlineUsers} active sessions, ${res.updated} users updated.`);
+      setServers(prev => prev.map(s => s.id === serverId ? { ...s, last_sync_at: new Date().toISOString() } : s));
+    } catch (e) {
+      setPanelError(e instanceof Error ? e.message : "Sync failed");
+    } finally { setPanelLoading(false); }
+  };
+
   // ── Form handlers ──────────────────────────────────────────────
   const handleAdd = async () => {
     setAddError("");
@@ -212,48 +267,6 @@ export function MikroTikServers() {
     if (status === "ok") return <span className="text-xs text-green-600 flex items-center gap-1"><CheckCircle className="w-3 h-3" /> {msg}</span>;
     return <span className="text-xs text-red-600 flex items-center gap-1"><AlertCircle className="w-3 h-3" /> {msg}</span>;
   };
-
-  const FormFields = ({ form, onChange, isEdit = false }: { form: typeof emptyForm; onChange: (p: Partial<typeof emptyForm>) => void; isEdit?: boolean }) => (
-    <div className="space-y-4">
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-        {[
-          { label: "Server Name *", key: "name", placeholder: "e.g. Main Router" },
-          { label: "Host / IP *", key: "host", placeholder: "192.168.88.1" },
-          { label: "Username *", key: "username", placeholder: "admin" },
-        ].map(f => (
-          <div key={f.key}>
-            <label className="block text-xs font-medium text-gray-600 mb-1">{f.label}</label>
-            <input value={(form as Record<string, string>)[f.key]} placeholder={f.placeholder}
-              onChange={e => onChange({ [f.key]: e.target.value } as Partial<typeof emptyForm>)}
-              className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
-          </div>
-        ))}
-        <div>
-          <label className="block text-xs font-medium text-gray-600 mb-1">Port</label>
-          <input type="number" value={form.port} placeholder="8728"
-            onChange={e => onChange({ port: Number(e.target.value) || 8728 })}
-            className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
-        </div>
-        <div>
-          <label className="block text-xs font-medium text-gray-600 mb-1">
-            Password {isEdit ? <span className="text-gray-400">(blank = keep current)</span> : <span className="text-red-500">*</span>}
-          </label>
-          <input type="password" value={form.password} placeholder={isEdit ? "••••••••" : "password"}
-            onChange={e => onChange({ password: e.target.value })}
-            className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
-        </div>
-      </div>
-      <div className="flex flex-wrap gap-5">
-        {([["use_tls","Use TLS / HTTPS"],["allow_insecure","Allow insecure TLS"],["is_default","Set as default"],["enabled","Enabled"]] as [keyof typeof emptyForm, string][]).map(([key, label]) => (
-          <label key={key} className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer">
-            <input type="checkbox" checked={form[key] as boolean}
-              onChange={e => onChange({ [key]: e.target.checked } as Partial<typeof emptyForm>)} className="rounded" />
-            {label}
-          </label>
-        ))}
-      </div>
-    </div>
-  );
 
   // ── Import panel ───────────────────────────────────────────────
   const renderImportPanel = (server: MikroTikServer) => {
@@ -378,6 +391,33 @@ export function MikroTikServers() {
             className="flex items-center gap-2 px-4 py-2 bg-orange-600 hover:bg-orange-700 disabled:bg-orange-300 text-white rounded-lg text-sm font-medium">
             <Upload size={14} />
             {panelLoading ? "Pushing…" : "Push to MikroTik"}
+          </button>
+          <button onClick={closePanel} className="px-4 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-lg text-sm">Cancel</button>
+        </div>
+      )}
+    </div>
+  );
+
+  // ── Sync MAC panel ─────────────────────────────────────────────
+  const renderSyncMacPanel = (server: MikroTikServer) => (
+    <div className="border-t border-purple-200 bg-purple-50 p-4 space-y-3">
+      <div className="flex items-center justify-between">
+        <p className="text-sm font-semibold text-purple-800">Sync MAC Addresses from MikroTik</p>
+        <button onClick={closePanel} className="p-1 hover:bg-purple-100 rounded"><X size={14} /></button>
+      </div>
+      <p className="text-xs text-gray-600">
+        Reads active PPPoE sessions from the router and updates each matched user's MAC address and
+        online status (online/offline) in the app. Offline users are marked but their MAC is kept.
+      </p>
+      {panelLoading && <p className="text-sm text-gray-500 flex items-center gap-2"><RefreshCw className="w-4 h-4 animate-spin" /> Syncing MAC addresses…</p>}
+      {panelError && <p className="text-sm text-red-600">{panelError}</p>}
+      {panelResult && <p className="text-sm text-emerald-700 font-medium">{panelResult}</p>}
+      {!panelResult && (
+        <div className="flex gap-2">
+          <button onClick={() => handleSyncMac(server.id)} disabled={panelLoading}
+            className="flex items-center gap-2 px-4 py-2 bg-purple-600 hover:bg-purple-700 disabled:bg-purple-300 text-white rounded-lg text-sm font-medium">
+            <Wifi size={14} />
+            {panelLoading ? "Syncing…" : "Sync MAC Addresses"}
           </button>
           <button onClick={closePanel} className="px-4 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-lg text-sm">Cancel</button>
         </div>
@@ -521,12 +561,21 @@ export function MikroTikServers() {
                       Push to Router
                       {panelServerId === server.id && panelMode === "push" ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
                     </button>
+
+                    {/* Sync MAC */}
+                    <button onClick={() => openPanel(server, "sync-mac")}
+                      className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium border transition-colors ${panelServerId === server.id && panelMode === "sync-mac" ? "bg-purple-600 text-white border-purple-600" : "bg-white border-gray-300 text-gray-700 hover:bg-purple-50 hover:border-purple-400 hover:text-purple-700"}`}>
+                      <Wifi size={14} />
+                      Sync MAC
+                      {panelServerId === server.id && panelMode === "sync-mac" ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+                    </button>
                   </div>
                 </div>
 
                 {/* Expandable sync panels */}
                 {panelServerId === server.id && panelMode === "import" && renderImportPanel(server)}
                 {panelServerId === server.id && panelMode === "push" && renderPushPanel(server)}
+                {panelServerId === server.id && panelMode === "sync-mac" && renderSyncMacPanel(server)}
               </div>
             )
           )}
