@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import { Plus, X, Check, CheckCircle, Trash2, Filter } from "lucide-react";
+import { fmtDate } from "../../utils/fmt";
 
 const API = import.meta.env.VITE_API_URL || "/api";
 const authH = () => {
@@ -206,7 +207,7 @@ export function Collections() {
             <tbody className="divide-y divide-gray-100">
               {collections.map(col => (
                 <tr key={col.id} className="hover:bg-gray-50">
-                  <td className="px-3 py-3 text-xs text-gray-600 whitespace-nowrap">{col.collection_date ? new Date(col.collection_date).toLocaleDateString() : "—"}</td>
+                  <td className="px-3 py-3 text-xs text-gray-600 whitespace-nowrap">{fmtDate(col.collection_date)}</td>
                   <td className="px-3 py-3 text-xs text-gray-500 font-mono">{col.c_code || "—"}</td>
                   <td className="px-3 py-3 font-medium text-gray-900 text-xs">{col.username}</td>
                   <td className="px-3 py-3 text-gray-700 text-xs">{col.customer_name || "—"}</td>

@@ -1,6 +1,7 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { Plus, X, CheckCircle, Clock, AlertCircle, Filter, Zap, List, RefreshCw,
          History, Power, PowerOff, Printer, Package, RotateCcw } from "lucide-react";
+import { fmtDate } from "../../utils/fmt";
 
 const API = import.meta.env.VITE_API_URL || (import.meta.env.DEV ? "http://localhost:8080/api" : "/api");
 const authH = () => {
@@ -67,7 +68,7 @@ function printInvoice(inv: Invoice, client: { username: string; full_name?: stri
       <tr><th>Received</th><td>৳${Number(inv.received_amount || 0).toLocaleString()}</td></tr>
       <tr><th>Balance Due</th><td class="total">৳${Number(inv.balance_due || 0).toLocaleString()}</td></tr>
       <tr><th>Payment Method</th><td>${inv.payment_method || '—'}</td></tr>
-      <tr><th>Paid Date</th><td>${inv.paid_date ? new Date(inv.paid_date).toLocaleDateString() : '—'}</td></tr>
+      <tr><th>Paid Date</th><td>${fmtDate(inv.paid_date)}</td></tr>
       <tr><th>Status</th><td><span class="badge">${inv.status}</span></td></tr>
       ${inv.received_by ? `<tr><th>Received By</th><td>${inv.received_by}</td></tr>` : ''}
     </table>
@@ -540,7 +541,7 @@ export function BillingList() {
                         ) : <span className="text-gray-400">—</span>}
                       </td>
                       <td className="px-3 py-3 text-red-600 font-medium text-xs">৳{Number(inv.balance_due || 0).toLocaleString()}</td>
-                      <td className="px-3 py-3 text-gray-500 text-xs">{inv.paid_date ? new Date(inv.paid_date).toLocaleDateString() : "—"}</td>
+                      <td className="px-3 py-3 text-gray-500 text-xs">{fmtDate(inv.paid_date)}</td>
                       <td className="px-3 py-3 text-gray-600 text-xs">{inv.payment_method || "—"}</td>
                       <td className="px-3 py-3">
                         {inv.is_withdrawn
@@ -627,7 +628,7 @@ export function BillingList() {
                               ? <span className="px-1.5 py-0.5 bg-gray-200 text-gray-600 rounded text-xs">withdrawn</span>
                               : <span className={`px-1.5 py-0.5 rounded text-xs font-medium ${STATUS_COLOR[inv.status] || "bg-gray-100 text-gray-600"}`}>{inv.status}</span>}
                           </td>
-                          <td className="px-3 py-2 text-xs text-gray-500">{inv.paid_date ? new Date(inv.paid_date).toLocaleDateString() : "—"}</td>
+                          <td className="px-3 py-2 text-xs text-gray-500">{fmtDate(inv.paid_date)}</td>
                           <td className="px-3 py-2 text-xs text-gray-500">{inv.payment_method || "—"}</td>
                           <td className="px-3 py-2">
                             <div className="flex items-center gap-1">

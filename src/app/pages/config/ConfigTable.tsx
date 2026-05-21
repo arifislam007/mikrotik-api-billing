@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import { Plus, Edit, Trash2, X, Check } from "lucide-react";
+import { fmtDate } from "../../utils/fmt";
 
 const API = import.meta.env.VITE_API_URL || "/api";
 const authH = () => {
@@ -140,7 +141,7 @@ export function ConfigTable({ title, subtitle, endpoint, fields, primaryLabel = 
                       {inp(editForm[f.key]||"", v => setEditForm(p=>({...p,[f.key]:v})), f)}
                     </td>
                   ))}
-                  <td className="px-4 py-2 text-gray-400 text-xs">{row.created_at ? new Date(row.created_at).toLocaleDateString() : "—"}</td>
+                  <td className="px-4 py-2 text-gray-400 text-xs">{fmtDate(row.created_at)}</td>
                   <td className="px-4 py-2">
                     <div className="flex gap-1">
                       <button onClick={() => handleUpdate(row.id)} className="p-1 hover:bg-green-100 rounded"><Check size={14} className="text-green-600" /></button>
@@ -153,7 +154,7 @@ export function ConfigTable({ title, subtitle, endpoint, fields, primaryLabel = 
                   {fields.map(f => (
                     <td key={f.key} className="px-5 py-3 text-gray-700">{row[f.key] || "—"}</td>
                   ))}
-                  <td className="px-5 py-3 text-gray-400 text-xs">{row.created_at ? new Date(row.created_at).toLocaleDateString() : "—"}</td>
+                  <td className="px-5 py-3 text-gray-400 text-xs">{fmtDate(row.created_at)}</td>
                   <td className="px-5 py-3">
                     <div className="flex gap-1">
                       <button onClick={() => startEdit(row)} className="p-1 hover:bg-gray-100 rounded" title="Edit"><Edit size={14} className="text-gray-600" /></button>

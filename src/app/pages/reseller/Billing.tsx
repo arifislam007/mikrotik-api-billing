@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import { Plus, X, CreditCard, Clock, CheckCircle } from "lucide-react";
+import { fmtDate } from "../../utils/fmt";
 import { resellerPortalService } from "../../services/api";
 
 interface Invoice {
@@ -155,8 +156,8 @@ export function ResellerBilling() {
                       {inv.status}
                     </span>
                   </td>
-                  <td className="px-5 py-3 text-gray-600 text-xs">{inv.due_date ? new Date(inv.due_date).toLocaleDateString() : "—"}</td>
-                  <td className="px-5 py-3 text-gray-600 text-xs">{inv.paid_date ? new Date(inv.paid_date).toLocaleDateString() : "—"}</td>
+                  <td className="px-5 py-3 text-gray-600 text-xs">{fmtDate(inv.due_date)}</td>
+                  <td className="px-5 py-3 text-gray-600 text-xs">{fmtDate(inv.paid_date)}</td>
                   <td className="px-5 py-3 text-gray-600 text-xs">{inv.payment_method || "—"}</td>
                   <td className="px-5 py-3">
                     {inv.status === "pending" && (

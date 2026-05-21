@@ -55,7 +55,9 @@ export function EditClient({ clientId, onClose, onSaved }: Props) {
       get("/config/isp_packages"),
       get("/mikrotik/servers"),
     ]).then(([client, z, ct, clt, pkg, srv]) => {
-      setForm(client);
+      // Normalize ISO date strings (2026-05-07T00:00:00.000Z) → plain date (2026-05-07)
+      const toDate = (v: unknown) => (typeof v === 'string' && v.length > 10) ? v.slice(0, 10) : (v || null);
+      setForm({ ...client, expiry_date: toDate(client.expiry_date), left_date: toDate(client.left_date) });
       setZones(z); setConnTypes(ct); setClientTypes(clt); setPackages(pkg); setServers(srv);
       setLoading(false);
     }).catch(() => setLoading(false));

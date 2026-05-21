@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import { Plus, X, Package, Wifi, WifiOff, RefreshCw } from "lucide-react";
+import { fmtDate } from "../../utils/fmt";
 import { resellerPortalService, packageService } from "../../services/api";
 
 interface User {
@@ -150,7 +151,7 @@ export function ResellerUsers() {
                       {user.status}
                     </span>
                   </td>
-                  <td className="px-5 py-3 text-gray-600 text-xs">{user.expiry_date ? new Date(user.expiry_date).toLocaleDateString() : "—"}</td>
+                  <td className="px-5 py-3 text-gray-600 text-xs">{fmtDate(user.expiry_date)}</td>
                   <td className="px-5 py-3 font-mono text-xs text-gray-500">{user.mac_address || "—"}</td>
                   <td className="px-5 py-3">
                     <button

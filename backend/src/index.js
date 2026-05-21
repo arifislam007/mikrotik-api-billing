@@ -333,10 +333,10 @@ const pushUsersToMikrotik = async (server, resellerId = null) => {
       const profileMatch = (remote.profile || 'default') === prof;
       const statusMatch = rd === disabled;
       if (profileMatch && statusMatch) { skipped++; continue; }
-      // PATCH by name using .query — no .id lookup needed
-      await mikrotikRequest(server, '/ppp/secret', {
+      // PATCH by internal .id — supported on all RouterOS versions
+      await mikrotikRequest(server, `/ppp/secret/${encodeURIComponent(remote['.id'])}`, {
         method: 'PATCH',
-        body: { '.query': [`name=${u.username}`], profile: prof, disabled, comment },
+        body: { profile: prof, disabled, comment },
       });
       updated++;
     }
@@ -363,10 +363,10 @@ const syncSingleUserToMikrotik = async (user) => {
     const existing = Array.isArray(found) ? found.find(s => s.name === user.username) : null;
 
     if (existing) {
-      // PATCH by name using .query — app data takes priority
-      const body = { '.query': [`name=${user.username}`], profile: prof, disabled, comment };
+      // PATCH by internal .id — supported on all RouterOS versions
+      const body = { profile: prof, disabled, comment };
       if (user.pppoe_password) body.password = user.pppoe_password;
-      await mikrotikRequest(server, '/ppp/secret', { method: 'PATCH', body });
+      await mikrotikRequest(server, `/ppp/secret/${encodeURIComponent(existing['.id'])}`, { method: 'PATCH', body });
     } else {
       // PUT to create new secret
       const body = { name: user.username, service: 'pppoe', profile: prof, disabled, comment };
@@ -424,8 +424,14 @@ const disableExpiredUsers = async () => {
 
 const generateInvoiceNumber = async () => {
   const yr = new Date().getFullYear();
-  const rows = await query('SELECT COUNT(*) as n FROM billing WHERE invoice_number LIKE ?', [`INV-${yr}-%`]);
-  return `INV-${yr}-${(parseInt(rows[0].n) + 1).toString().padStart(6, '0')}`;
+  // Use MAX of the numeric suffix so deletes or concurrent inserts don't cause duplicates
+  const rows = await query(
+    `SELECT MAX(CAST(SUBSTRING_INDEX(invoice_number, '-', -1) AS UNSIGNED)) AS max_n
+     FROM billing WHERE invoice_number LIKE ?`,
+    [`INV-${yr}-%`]
+  );
+  const next = (parseInt(rows[0].max_n) || 0) + 1;
+  return `INV-${yr}-${next.toString().padStart(6, '0')}`;
 };
 
 // ── Health ────────────────────────────────────────────────────
