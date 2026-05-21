@@ -20,11 +20,13 @@ app.use('/api', async (req, res) => {
   console.log(`[Gateway] ${req.method} ${req.url} -> ${url}`);
 
   try {
+    const forwardHeaders = { 'Content-Type': 'application/json' };
+    if (req.headers.authorization) forwardHeaders['Authorization'] = req.headers.authorization;
+    if (req.headers['x-forwarded-for']) forwardHeaders['X-Forwarded-For'] = req.headers['x-forwarded-for'];
+
     const options = {
       method: req.method,
-      headers: {
-        'Content-Type': 'application/json',
-      },
+      headers: forwardHeaders,
     };
 
     if (req.method !== 'GET' && req.method !== 'HEAD' && req.body) {
