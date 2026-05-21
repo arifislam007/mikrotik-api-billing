@@ -910,6 +910,70 @@ app.delete('/api/billing/:id', requireAuth, requireAdmin, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// Billable clients dashboard — all active billing clients with their invoice for the month
+app.get('/api/billing/clients', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const month = req.query.month || new Date().toISOString().slice(0, 7);
+    const rows = await query(`
+      SELECT
+        u.id, u.username, u.full_name, u.mobile,
+        u.monthly_bill, u.billing_status, u.status,
+        z.name  AS zone_name,
+        pkg.name AS package_name,
+        b.id            AS invoice_id,
+        b.invoice_number,
+        b.amount,
+        b.received_amount,
+        b.balance_due,
+        b.vat,
+        b.discount,
+        b.status        AS invoice_status,
+        b.payment_method,
+        b.paid_date
+      FROM users u
+      LEFT JOIN zones z         ON u.zone_id = z.id
+      LEFT JOIN isp_packages pkg ON u.package_id = pkg.id
+      LEFT JOIN billing b
+        ON b.user_id = u.id AND b.billing_month = ?
+      WHERE u.billing_status = 'active'
+        AND (u.is_left = 0 OR u.is_left IS NULL)
+      ORDER BY u.username ASC
+    `, [month]);
+    res.json(rows);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Quick-pay: create invoice (if needed) and mark paid in one step
+app.post('/api/billing/quick-pay', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const { user_id, month, amount, payment_method, received_by, vat = 0, discount = 0, note } = req.body;
+    if (!user_id || !amount || !payment_method) return res.status(400).json({ error: 'user_id, amount, and payment_method required' });
+    const bm = month || new Date().toISOString().slice(0, 7);
+    const today = new Date().toISOString().split('T')[0];
+    const received = Number(amount) - Number(discount);
+    const balance = 0; // fully paid
+
+    // Check if invoice already exists for this month
+    const existing = await query('SELECT id FROM billing WHERE user_id=? AND billing_month=?', [user_id, bm]);
+    let invoiceId;
+    if (existing.length > 0) {
+      invoiceId = existing[0].id;
+      await pool.execute(`UPDATE billing SET
+        status='paid', received_amount=?, balance_due=0, vat=?, discount=?,
+        paid_date=?, payment_method=?, received_by=COALESCE(?,received_by)
+        WHERE id=?`,
+        [received, vat, discount, today, payment_method, received_by || null, invoiceId]);
+    } else {
+      invoiceId = uuidv4();
+      await pool.execute(`INSERT INTO billing
+        (id, user_id, invoice_number, billing_month, amount, received_amount, vat, discount, balance_due, status, paid_date, payment_method, note, received_by)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+        [invoiceId, user_id, await generateInvoiceNumber(), bm, amount, received, vat, discount, balance, 'paid', today, payment_method, note || null, received_by || null]);
+    }
+    res.json((await query(`SELECT ${billSelect} ${billJoin} WHERE b.id=?`, [invoiceId]))[0]);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // Bill stats summary
 app.get('/api/billing/stats', requireAuth, requireAdmin, async (req, res) => {
   try {
