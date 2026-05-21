@@ -267,28 +267,49 @@ const fetchMikrotikProfiles = async (server) => {
   }));
 };
 
-const importUsersFromMikrotik = async (server, resellerId = null) => {
+const importUsersFromMikrotik = async (server, resellerId = null, usernames = null) => {
   const secrets = await mikrotikRequest(server, '/ppp/secret');
-  const valid = Array.isArray(secrets) ? secrets.filter(s => s?.name) : [];
+  let valid = Array.isArray(secrets) ? secrets.filter(s => s?.name) : [];
+  if (usernames && Array.isArray(usernames)) {
+    const set = new Set(usernames);
+    valid = valid.filter(s => set.has(s.name));
+  }
   const existing = new Set((await query('SELECT username FROM users')).map(r => r.username));
   let created = 0, updated = 0;
   for (const s of valid) {
     const isDisabled = s.disabled === true || s.disabled === 'true';
     const status = isDisabled ? 'disabled' : 'active';
-    existing.has(s.name) ? updated++ : (created++, existing.add(s.name));
-    await pool.execute(
-      `INSERT INTO users (id, username, profile, billing_package, status, reseller_id) VALUES (?,?,?,?,?,?)
-       ON DUPLICATE KEY UPDATE profile=VALUES(profile), billing_package=VALUES(billing_package), status=VALUES(status)`,
-      [uuidv4(), s.name, s.profile || 'default', s.profile || 'default', status, resellerId]
-    );
+    const prof = s.profile || 'default';
+    const pass = s.password || '';
+    if (existing.has(s.name)) {
+      updated++;
+      await pool.execute(
+        `UPDATE users SET profile=?, billing_package=?, pppoe_password=?, status=?, server_id=?
+         WHERE username=?`,
+        [prof, prof, pass, status, server.id, s.name]
+      );
+    } else {
+      created++;
+      existing.add(s.name);
+      await pool.execute(
+        `INSERT INTO users (id, username, profile, billing_package, pppoe_password, status, server_id, reseller_id)
+         VALUES (?,?,?,?,?,?,?,?)`,
+        [uuidv4(), s.name, prof, prof, pass, status, server.id, resellerId]
+      );
+    }
   }
   return { totalRemoteUsers: valid.length, created, updated };
 };
 
 const pushUsersToMikrotik = async (server, resellerId = null) => {
-  const clause = resellerId ? 'WHERE reseller_id = ?' : '';
-  const params = resellerId ? [resellerId] : [];
-  const local = await query(`SELECT username, profile, status FROM users ${clause}`, params);
+  // Only push users assigned to this specific server
+  const clauses = ['(server_id = ? OR server_id IS NULL)'];
+  const params = [server.id];
+  if (resellerId) { clauses.push('reseller_id = ?'); params.push(resellerId); }
+  const local = await query(
+    `SELECT username, profile, pppoe_password, status FROM users WHERE ${clauses.join(' AND ')}`,
+    params
+  );
   const secrets = await mikrotikRequest(server, '/ppp/secret');
   const remoteMap = new Map((Array.isArray(secrets) ? secrets : []).map(s => [s.name, s]));
   let created = 0, updated = 0, skipped = 0;
@@ -296,13 +317,19 @@ const pushUsersToMikrotik = async (server, resellerId = null) => {
     const remote = remoteMap.get(u.username);
     const disabled = u.status !== 'active';
     const prof = u.profile || 'default';
+    const pass = u.pppoe_password || '';
     if (!remote) {
-      await mikrotikRequest(server, '/ppp/secret', { method: 'POST', body: { name: u.username, profile: prof, disabled } });
+      const body = { name: u.username, profile: prof, disabled: String(disabled) };
+      if (pass) body.password = pass;
+      await mikrotikRequest(server, '/ppp/secret', { method: 'POST', body });
       created++;
     } else {
       const rd = remote.disabled === true || remote.disabled === 'true';
-      if ((remote.profile || 'default') === prof && rd === disabled) { skipped++; continue; }
-      await mikrotikRequest(server, `/ppp/secret/${encodeURIComponent(remote['.id'])}`, { method: 'PATCH', body: { profile: prof, disabled } });
+      const profileMatch = (remote.profile || 'default') === prof;
+      const statusMatch = rd === disabled;
+      if (profileMatch && statusMatch) { skipped++; continue; }
+      await mikrotikRequest(server, `/ppp/secret/${encodeURIComponent(remote['.id'])}`,
+        { method: 'PATCH', body: { profile: prof, disabled: String(disabled) } });
       updated++;
     }
   }
@@ -569,12 +596,35 @@ app.get('/api/mikrotik/servers/:id/profiles', requireAuth, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// Preview: returns remote PPPoE secrets annotated with whether they exist locally
+app.get('/api/mikrotik/servers/:id/preview-import', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const s = await getMikrotikServer(req.params.id);
+    if (!s) return res.status(404).json({ error: 'Server not found' });
+    const secrets = await mikrotikRequest(s, '/ppp/secret');
+    const valid = Array.isArray(secrets) ? secrets.filter(x => x?.name) : [];
+    const localMap = new Map(
+      (await query('SELECT username, server_id FROM users')).map(r => [r.username, r])
+    );
+    const users = valid.map(s => ({
+      username:  s.name,
+      profile:   s.profile || 'default',
+      password:  s.password || '',
+      disabled:  s.disabled === true || s.disabled === 'true',
+      exists_locally: localMap.has(s.name),
+      same_server:    localMap.get(s.name)?.server_id === req.params.id,
+    }));
+    res.json({ total: users.length, users });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 app.post('/api/mikrotik/servers/:id/import-users', requireAuth, requireAdmin, async (req, res) => {
   try {
     const s = await getMikrotikServer(req.params.id);
     if (!s) return res.status(404).json({ error: 'Server not found' });
-    const result = await importUsersFromMikrotik(s);
-    await pool.execute('UPDATE mikrotik_servers SET last_sync_at=NOW() WHERE id=?',[s.id]);
+    const usernames = req.body?.usernames || null; // optional filter: import only these
+    const result = await importUsersFromMikrotik(s, null, usernames);
+    await pool.execute('UPDATE mikrotik_servers SET last_sync_at=NOW() WHERE id=?', [s.id]);
     res.json({ message: 'Import completed', ...result });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -586,8 +636,8 @@ app.post('/api/mikrotik/servers/:id/sync', requireAuth, requireAdmin, async (req
     const dir = req.body?.direction || 'both';
     const pull = (dir==='pull'||dir==='both') ? await importUsersFromMikrotik(s) : null;
     const push = (dir==='push'||dir==='both') ? await pushUsersToMikrotik(s) : null;
-    await pool.execute('UPDATE mikrotik_servers SET last_sync_at=NOW() WHERE id=?',[s.id]);
-    res.json({ message: 'Sync completed', direction:dir, pull, push });
+    await pool.execute('UPDATE mikrotik_servers SET last_sync_at=NOW() WHERE id=?', [s.id]);
+    res.json({ message: 'Sync completed', direction: dir, pull, push });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 

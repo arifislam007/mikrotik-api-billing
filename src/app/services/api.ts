@@ -109,7 +109,10 @@ export const mikrotikService = {
   updateServer: (id: string, data: unknown) => api.put(`/mikrotik/servers/${id}`, data),
   deleteServer: (id: string) => api.delete(`/mikrotik/servers/${id}`),
   testServer: (id: string) => api.post(`/mikrotik/servers/${id}/test`, {}),
-  importUsers: (id: string) => api.post(`/mikrotik/servers/${id}/import-users`, {}),
+  previewImport: (id: string) => api.get(`/mikrotik/servers/${id}/preview-import`),
+  importUsers: (id: string, usernames?: string[]) =>
+    api.post(`/mikrotik/servers/${id}/import-users`, usernames ? { usernames } : {}),
+  pushUsers: (id: string) => api.post(`/mikrotik/servers/${id}/sync`, { direction: 'push' }),
   syncUsers: (id: string, direction = 'both') => api.post(`/mikrotik/servers/${id}/sync`, { direction }),
 };
 
