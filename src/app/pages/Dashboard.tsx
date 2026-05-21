@@ -103,10 +103,10 @@ export function Dashboard() {
             <p className="text-xs text-gray-500 uppercase tracking-wider font-semibold mb-3">Client Status</p>
             <div className="space-y-2">
               {[
-                { label: "Active", value: stats.runningClients, color: "bg-emerald-500" },
-                { label: "Inactive / Suspended", value: stats.inactiveClients, color: "bg-orange-400" },
-                { label: "Blocked", value: stats.blockedClients, color: "bg-red-500" },
-                { label: "Left", value: stats.leftClients, color: "bg-gray-400" },
+                { label: "Active", value: stats.runningClients ?? 0, color: "bg-emerald-500" },
+                { label: "Inactive / Suspended", value: stats.inactiveClients ?? 0, color: "bg-orange-400" },
+                { label: "Blocked", value: stats.blockedClients ?? 0, color: "bg-red-500" },
+                { label: "Left", value: stats.leftClients ?? 0, color: "bg-gray-400" },
               ].map(item => {
                 const total = stats.totalClients || 1;
                 const pct = Math.round((item.value / total) * 100);
@@ -129,10 +129,10 @@ export function Dashboard() {
             <p className="text-xs text-gray-500 uppercase tracking-wider font-semibold mb-3">Billing This Month</p>
             <div className="space-y-3">
               {[
-                { label: "Paid",           value: stats.paidClients,     color: "text-emerald-600", bg: "bg-emerald-50" },
-                { label: "Partially Paid", value: stats.partialPaid,     color: "text-blue-600",    bg: "bg-blue-50" },
-                { label: "Unpaid",         value: stats.unpaidClients,   color: "text-red-600",     bg: "bg-red-50" },
-                { label: "Bill Expired",   value: stats.billDateExpire,  color: "text-orange-600",  bg: "bg-orange-50" },
+                { label: "Paid",           value: stats.paidClients    ?? 0, color: "text-emerald-600", bg: "bg-emerald-50" },
+                { label: "Partially Paid", value: stats.partialPaid    ?? 0, color: "text-blue-600",    bg: "bg-blue-50" },
+                { label: "Unpaid",         value: stats.unpaidClients  ?? 0, color: "text-red-600",     bg: "bg-red-50" },
+                { label: "Bill Expired",   value: stats.billDateExpire ?? 0, color: "text-orange-600",  bg: "bg-orange-50" },
               ].map(item => (
                 <div key={item.label} className={`flex justify-between items-center px-3 py-2 ${item.bg} rounded-lg`}>
                   <span className="text-xs text-gray-600">{item.label}</span>
@@ -147,16 +147,16 @@ export function Dashboard() {
             <div className="space-y-4">
               <div>
                 <p className="text-xs text-gray-500">Total Revenue Collected</p>
-                <p className="text-2xl font-bold text-emerald-600">৳{stats.totalRevenue.toLocaleString()}</p>
+                <p className="text-2xl font-bold text-emerald-600">৳{(stats.totalRevenue ?? 0).toLocaleString()}</p>
               </div>
               <div>
                 <p className="text-xs text-gray-500">Pending Dues</p>
-                <p className="text-xl font-bold text-red-500">৳{stats.pendingAmount.toLocaleString()}</p>
-                <p className="text-xs text-gray-400">{stats.pendingCount} invoices pending</p>
+                <p className="text-xl font-bold text-red-500">৳{(stats.pendingAmount ?? 0).toLocaleString()}</p>
+                <p className="text-xs text-gray-400">{stats.pendingCount ?? 0} invoices pending</p>
               </div>
               <div>
                 <p className="text-xs text-gray-500">Online Now</p>
-                <p className="text-lg font-bold text-cyan-600">{stats.onlineClients} clients</p>
+                <p className="text-lg font-bold text-cyan-600">{stats.onlineClients ?? 0} clients</p>
               </div>
             </div>
           </div>

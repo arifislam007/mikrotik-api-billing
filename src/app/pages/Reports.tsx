@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { Button } from "../components/Button";
-import { Download, FileText, Users, DollarSign, MapPin, UserCog, Activity } from "lucide-react";
+import { FileText, Users, DollarSign, MapPin, Activity } from "lucide-react";
 import { BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from "recharts";
 import { statsService } from "../services/api";
 
@@ -10,8 +10,7 @@ interface ReportData {
   totalUsers: number;
   activeUsers: number;
   disabledUsers: number;
-  byLocation: { name: string; active: number; disabled: number }[];
-  byReseller: { name: string; active: number; disabled: number }[];
+  byZone: { name: string; clients: number; active: number }[];
   monthlyRevenue: number;
   byPaymentMethod: { method: string; amount: number; count: number }[];
   pendingInvoices: { count: number; amount: number };
@@ -40,8 +39,8 @@ export function Reports() {
   const handleExportCSV = (reportType: string) => {
     if (!reportData) return;
     const rows = reportType === "User"
-      ? [["Location", "Active", "Disabled"], ...reportData.byLocation.map((l) => [l.name, l.active, l.disabled])]
-      : [["Payment Method", "Amount", "Count"], ...reportData.byPaymentMethod.map((p) => [p.method, p.amount, p.count])];
+      ? [["Zone", "Clients", "Active"], ...(reportData.byZone || []).map((z) => [z.name, z.clients, z.active])]
+      : [["Payment Method", "Amount", "Count"], ...(reportData.byPaymentMethod || []).map((p) => [p.method, p.amount, p.count])];
     const csv = rows.map((r) => r.join(",")).join("\n");
     const blob = new Blob([csv], { type: "text/csv" });
     const url = URL.createObjectURL(blob);
@@ -150,84 +149,53 @@ export function Reports() {
           </div>
 
           <div>
-            <h3 className="text-lg font-semibold text-gray-900 mb-4">Users by Location</h3>
-            {reportData.byLocation.length > 0 ? (
+            <h3 className="text-lg font-semibold text-gray-900 mb-4">Users by Zone</h3>
+            {(reportData.byZone || []).length > 0 ? (
               <ResponsiveContainer width="100%" height={250}>
-                <BarChart data={reportData.byLocation}>
+                <BarChart data={reportData.byZone}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
                   <XAxis dataKey="name" stroke="#9ca3af" />
                   <YAxis stroke="#9ca3af" />
                   <Tooltip />
                   <Legend />
                   <Bar dataKey="active" fill="#10b981" radius={[4, 4, 0, 0]} name="Active" />
-                  <Bar dataKey="disabled" fill="#f59e0b" radius={[4, 4, 0, 0]} name="Disabled" />
+                  <Bar dataKey="clients" fill="#3b82f6" radius={[4, 4, 0, 0]} name="Total" />
                 </BarChart>
               </ResponsiveContainer>
             ) : (
-              <p className="text-gray-500 text-center py-8">No location data available</p>
+              <p className="text-gray-500 text-center py-8">No zone data available</p>
             )}
           </div>
         </div>
 
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          {reportData.byLocation.length > 0 && (
-            <div>
-              <h3 className="text-lg font-semibold text-gray-900 mb-3 flex items-center gap-2">
-                <MapPin className="w-5 h-5 text-blue-600" />
-                Breakdown by Location
-              </h3>
-              <div className="border border-gray-200 rounded-lg overflow-hidden">
-                <table className="w-full">
-                  <thead className="bg-gray-50">
-                    <tr>
-                      <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Location</th>
-                      <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase">Active</th>
-                      <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase">Disabled</th>
+        {(reportData.byZone || []).length > 0 && (
+          <div>
+            <h3 className="text-lg font-semibold text-gray-900 mb-3 flex items-center gap-2">
+              <MapPin className="w-5 h-5 text-blue-600" />
+              Breakdown by Zone
+            </h3>
+            <div className="border border-gray-200 rounded-lg overflow-hidden">
+              <table className="w-full">
+                <thead className="bg-gray-50">
+                  <tr>
+                    <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Zone</th>
+                    <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase">Total</th>
+                    <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase">Active</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-200">
+                  {(reportData.byZone || []).map((z) => (
+                    <tr key={z.name}>
+                      <td className="px-4 py-2 text-gray-900">{z.name}</td>
+                      <td className="px-4 py-2 text-right text-blue-600 font-medium">{z.clients}</td>
+                      <td className="px-4 py-2 text-right text-green-600 font-medium">{z.active}</td>
                     </tr>
-                  </thead>
-                  <tbody className="divide-y divide-gray-200">
-                    {reportData.byLocation.map((loc) => (
-                      <tr key={loc.name}>
-                        <td className="px-4 py-2 text-gray-900">{loc.name}</td>
-                        <td className="px-4 py-2 text-right text-green-600 font-medium">{loc.active}</td>
-                        <td className="px-4 py-2 text-right text-orange-600 font-medium">{loc.disabled}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+                  ))}
+                </tbody>
+              </table>
             </div>
-          )}
-
-          {reportData.byReseller.length > 0 && (
-            <div>
-              <h3 className="text-lg font-semibold text-gray-900 mb-3 flex items-center gap-2">
-                <UserCog className="w-5 h-5 text-purple-600" />
-                Breakdown by Reseller
-              </h3>
-              <div className="border border-gray-200 rounded-lg overflow-hidden">
-                <table className="w-full">
-                  <thead className="bg-gray-50">
-                    <tr>
-                      <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Reseller</th>
-                      <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase">Active</th>
-                      <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase">Disabled</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-gray-200">
-                    {reportData.byReseller.map((res) => (
-                      <tr key={res.name}>
-                        <td className="px-4 py-2 text-gray-900">{res.name}</td>
-                        <td className="px-4 py-2 text-right text-green-600 font-medium">{res.active}</td>
-                        <td className="px-4 py-2 text-right text-orange-600 font-medium">{res.disabled}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
-        </div>
+          </div>
+        )}
       </div>
 
       {/* Account Report Section */}
