@@ -1388,7 +1388,10 @@ app.post('/api/reseller/users', requireAuth, async (req, res) => {
     const exp = expiry_date || new Date(Date.now()+pkg.duration_days*86400000).toISOString().split('T')[0];
     await pool.execute('INSERT INTO users (id,username,profile,billing_package,billing_price,status,expiry_date,reseller,reseller_id) VALUES (?,?,?,?,?,?,?,?,?)',
       [id,username,pkg.mikrotik_profile,pkg.name,pkg.price,status,exp,rname,reseller_id]);
-    res.status(201).json((await query('SELECT * FROM users WHERE id=?',[id]))[0]);
+    const created = (await query('SELECT * FROM users WHERE id=?',[id]))[0];
+    res.status(201).json(created);
+    // Fire-and-forget: sync new user to MikroTik
+    syncSingleUserToMikrotik({ id, username, pppoe_password: null, profile: pkg.mikrotik_profile, status, server_id: null });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -1401,7 +1404,10 @@ app.put('/api/reseller/users/:id/package', requireAuth, async (req, res) => {
     const [r] = await pool.execute(`UPDATE users SET profile=?,billing_package=?,billing_price=? WHERE id=? ${oc}`,
       [pkg.mikrotik_profile,pkg.name,pkg.price,req.params.id,...(req.user.role==='reseller'?[req.user.reseller_id]:[])]);
     if (r.affectedRows===0) return res.status(404).json({ error: 'User not found' });
-    res.json((await query('SELECT * FROM users WHERE id=?',[req.params.id]))[0]);
+    const updated = (await query('SELECT * FROM users WHERE id=?',[req.params.id]))[0];
+    res.json(updated);
+    // Fire-and-forget: sync profile change to MikroTik
+    syncSingleUserToMikrotik({ id: updated.id, username: updated.username, pppoe_password: updated.pppoe_password, profile: updated.profile, status: updated.status, server_id: updated.server_id });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
